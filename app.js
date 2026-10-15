@@ -192,25 +192,49 @@ function renderMessage(body) {
 /* ======================================================================
    API client
    ====================================================================== */
+
+const API_BASE = 'https://devcord.xerrortm.workers.dev';
 class ApiError extends Error {
-  constructor(status, message, fields) { super(message); this.status = status; this.fields = fields || {}; }
+  constructor(status, message, fields) {
+    super(message);
+    this.status = status;
+    this.fields = fields || {};
+  }
 }
 async function api(path, opts = {}) {
-  const init = { method: opts.method || 'GET', credentials: 'same-origin', headers: { ...(opts.headers || {}) } };
-  if (opts.raw !== undefined) init.body = opts.raw;
-  else if (opts.body !== undefined) { init.headers['Content-Type'] = 'application/json'; init.body = JSON.stringify(opts.body); }
+  const init = {
+    method: opts.method || 'GET',
+    credentials: 'include',
+    headers: { ...(opts.headers || {}) }
+  };
+  if (opts.raw !== undefined) {
+     init.body = opts.raw;
+  } else if (opts.body !== undefined) {
+    init.headers['Content-Type'] = 'application/json';
+    init.body = JSON.stringify(opts.body);
+  }
   let res;
-  try { res = await fetch('/api' + path, init); } catch { throw new ApiError(0, 'Network error — check your connection and try again.'); }
+  try {res = await fetch(`${API_BASE}/api${path}`, init);} catch {throw new ApiError(0,'Network error — check your connection and try again.');}
   let data = null;
-  const text = await res.text();
-  if (text) { try { data = JSON.parse(text); } catch { /* non-JSON */ } }
+  const responseText = await res.text();
+  if (responseText) {
+    try {
+      data = JSON.parse(responseText);
+    } catch {
+    }
+  }
   if (!res.ok) {
-    if (res.status === 401 && S.user && !opts.quiet) sessionExpired();
-    throw new ApiError(res.status, data?.error || `Request failed (${res.status}).`, data?.fields);
+    if (res.status === 401 && S.user && !opts.quiet) {
+      sessionExpired();
+    }
+    throw new ApiError(
+      res.status,
+      data?.error || `Request failed (${res.status}).`,
+      data?.fields
+    );
   }
   return data;
 }
-
 /* ======================================================================
    State
    ====================================================================== */
@@ -632,7 +656,7 @@ function updateUnreadBadge() {
    ====================================================================== */
 function connectWs() {
   if (!S.user || S.ws) return;
-  const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/ws`);
+   const ws = new WebSocket('wss://devcord.xerrortm.workers.dev/api/ws');
   S.ws = ws;
   let wasReconnect = S.retry > 0;
   ws.onopen = () => {
