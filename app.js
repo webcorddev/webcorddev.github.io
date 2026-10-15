@@ -645,7 +645,7 @@ function updateUnreadBadge() {
 /* ======================================================================
    Realtime (simple polling of /api/sync)
    ====================================================================== */
-const SYNC_VISIBLE_MS = 3000, SYNC_HIDDEN_MS = 15000;
+const SYNC_VISIBLE_MS = 10000, SYNC_HIDDEN_MS = 15000;
 function startSync() {
   if (!S.user || S.syncTimer) return;
   S.syncSeq = null; S.retry = 0;
@@ -762,7 +762,7 @@ async function openRoom(room, token) {
           <label class="btn icon ghost" for="file-input" title="Attach an image" aria-label="Attach an image">${icon('paperclip', 19)}</label>
           <input type="file" id="file-input" class="sr-only" tabindex="-1" accept="image/png,image/jpeg,image/gif,image/webp">
           <button type="button" class="btn icon ghost" data-action="insert-code" title="Insert code block" aria-label="Insert code block">${icon('code', 19)}</button>
-          <span class="spacer"></span><span class="tip">Enter to send · Shift+Enter for a new line</span>
+          <span class="spacer"></span><span class="tip">Shift+Enter to send</span>
           <button class="btn primary sm" type="submit" id="send-btn">${icon('send', 15)} Send</button>
         </div>
       </div>
@@ -843,7 +843,7 @@ function bindComposer() {
   const form = $('#composer'), ta = $('#msg-input');
   ta.addEventListener('input', () => autoGrow(ta));
   ta.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); form.requestSubmit(); }
+   if (e.key === 'Enter' && e.shiftKey && !e.isComposing) {e.preventDefault();form.requestSubmit();}
   });
   form.addEventListener('submit', (e) => { e.preventDefault(); sendMessage(); });
   $('#file-input').addEventListener('change', onFilePicked);
