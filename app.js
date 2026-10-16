@@ -34,6 +34,10 @@ const ICONS = {
   calendar: '<rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/>',
   link: '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
   upload: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/>',
+  download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>',
+  sidebar: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/>',
+  chevleft: '<path d="M15 18l-6-6 6-6"/>',
+  chevright: '<path d="M9 18l6-6-6-6"/>',
 };
 const icon = (name, size) => `<svg class="ico" ${size ? `style="width:${size}px;height:${size}px"` : ''} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ''}</svg>`;
 
@@ -84,74 +88,75 @@ function toast(msg, type = '') {
 /* ======================================================================
    Syntax highlighting + safe Markdown
    ====================================================================== */
-const KW = {
-  js: 'const let var function return if else for while do switch case break continue new class extends import export from default async await try catch finally throw typeof instanceof in of this super null undefined true false yield static get set interface type enum implements public private protected readonly as void delete',
-  py: 'def class return if elif else for while in not and or is import from as with try except finally raise lambda None True False pass break continue yield global nonlocal async await self',
-  c: 'int long short char float double void unsigned signed struct union enum typedef static const extern return if else for while do switch case break continue sizeof new delete class public private protected namespace using template typename fn let mut impl trait pub use mod match func package go defer chan interface map range var bool string true false null nil this final throws try catch finally throw import include def end',
-  sql: 'select from where insert into values update set delete create table index drop alter add join left right inner outer on group by order limit offset having and or not null as distinct primary key foreign references default unique integer text real blob if exists like in is between case when then else end union all',
-  sh: 'if then else elif fi for do done while case esac function in echo cd ls export source sudo npm npx git curl cat grep sed awk exit return',
-  json: 'true false null',
+/* Syntax highlighting is done by Shiki (theme: github-light). It is loaded lazily from esm.sh the first time a code block
+   appears; until it arrives (or if it can't be loaded) code is shown as plain, escaped text. */
+const SHIKI_VERSION = '3.13.0';
+const SHIKI_THEME = 'github-light';
+const LANG_ALIAS = {
+  h: 'c', cc: 'cpp', hpp: 'cpp', mjs: 'js', cjs: 'js', kts: 'kotlin', ps1: 'powershell', bat: 'bat', htm: 'html',
+  conf: 'ini', cfg: 'ini', makefile: 'make', gitignore: 'text', txt: 'text', log: 'text', plain: 'text', plaintext: 'text', text: 'text',
+  node: 'js', golang: 'go', 'c++': 'cpp', 'c#': 'csharp', 'env.example': 'ini', graphql: 'graphql', gql: 'graphql', console: 'shellsession', shell: 'bash',
 };
-function normLang(l) {
-  l = (l || '').toLowerCase();
-  if (/^(js|jsx|javascript|mjs|cjs|ts|tsx|typescript|node)$/.test(l)) return 'js';
-  if (/^(py|python)$/.test(l)) return 'py';
-  if (/^(html|xml|svg|vue)$/.test(l)) return 'html';
-  if (/^(css|scss|less)$/.test(l)) return 'css';
-  if (l === 'json') return 'json';
-  if (/^(sql|sqlite|postgres|mysql)$/.test(l)) return 'sql';
-  if (/^(sh|bash|shell|zsh|console)$/.test(l)) return 'sh';
-  if (/^(c|cpp|c\+\+|cs|c#|java|go|golang|rust|rs|php|swift|kotlin|kt|dart|rb|ruby)$/.test(l)) return 'c';
-  return '';
+const hlCache = new Map(); // "lang\0code" -> highlighted <pre> html
+let shikiP = null, shikiFailAt = 0;
+function getShiki() {
+  if (Date.now() - shikiFailAt < 30000) return Promise.reject(new Error('shiki unavailable'));
+  if (!shikiP) {
+    shikiP = (async () => {
+      const [mod, eng] = await Promise.all([
+        import(`https://esm.sh/shiki@${SHIKI_VERSION}`),
+        import(`https://esm.sh/shiki@${SHIKI_VERSION}/engine/javascript`),
+      ]);
+      const hl = await mod.createHighlighter({ themes: [SHIKI_THEME], langs: [], engine: eng.createJavaScriptRegexEngine({ forgiving: true }) });
+      return { hl, known: mod.bundledLanguages };
+    })().catch((e) => { shikiP = null; shikiFailAt = Date.now(); throw e; });
+  }
+  return shikiP;
 }
-function hlHtml(code) {
-  const re = /(<!--[\s\S]*?-->)|(<\/?)([A-Za-z][\w-]*)((?:"[^"]*"|'[^']*'|[^>"'])*)(\/?>)/g;
-  let out = '', last = 0, m;
-  while ((m = re.exec(code))) {
-    out += esc(code.slice(last, m.index));
-    if (m[1]) out += `<span class="t-c">${esc(m[1])}</span>`;
-    else {
-      const attrs = m[4].replace(/([^\s=]+)(=)("[^"]*"|'[^']*'|[^\s]+)|([^\s=]+)/g, (_, a, eq, v, solo) =>
-        solo ? `<span class="t-a">${esc(solo)}</span>` : `<span class="t-a">${esc(a)}</span>=<span class="t-s">${esc(v)}</span>`);
-      out += `<span class="t-p">${esc(m[2])}</span><span class="t-t">${esc(m[3])}</span>${attrs}<span class="t-p">${esc(m[5])}</span>`;
+const hlLang = (l) => { l = String(l || '').toLowerCase().trim(); return LANG_ALIAS[l] || l; };
+const wantsHl = (code, lang) => { const l = hlLang(lang); return !!l && l !== 'text' && code.length <= 60000; };
+async function shikiPre(code, lang) {
+  const l = hlLang(lang), key = l + '\0' + code;
+  if (hlCache.has(key)) return hlCache.get(key);
+  const { hl, known } = await getShiki();
+  if (!(l in known)) return null;
+  await hl.loadLanguage(l);
+  const html = hl.codeToHtml(code, { lang: l, theme: SHIKI_THEME });
+  if (hlCache.size > 300) hlCache.delete(hlCache.keys().next().value);
+  hlCache.set(key, html);
+  return html;
+}
+/** Upgrade every not-yet-highlighted code block on the page. */
+let enhancing = false;
+async function enhanceCode() {
+  if (enhancing) return;
+  enhancing = true;
+  try {
+    for (const el of $$('.code[data-hl="pending"]')) {
+      el.dataset.hl = 'busy';
+      try {
+        const html = await shikiPre($('code', el).textContent, el.dataset.lang);
+        if (!html || !el.isConnected) { el.dataset.hl = 'none'; continue; }
+        const t = document.createElement('template'); t.innerHTML = html;
+        const pre = t.content.querySelector('pre');
+        if (pre) { $('pre', el).replaceWith(pre); el.dataset.hl = 'done'; } else el.dataset.hl = 'none';
+      } catch { el.dataset.hl = 'none'; }
     }
-    last = re.lastIndex;
-  }
-  return out + esc(code.slice(last));
+  } finally { enhancing = false; }
 }
-function highlight(code, lang) {
-  const g = normLang(lang);
-  if (!g || code.length > 30000) return esc(code);
-  if (g === 'html') return hlHtml(code);
-  const dq = '"(?:\\\\.|[^"\\\\\\n])*"';
-  const sq = "'(?:\\\\.|[^'\\\\\\n])*'";
-  const bt = '`(?:\\\\.|[^`\\\\])*`';
-  const comment = g === 'py' || g === 'sh' ? '#[^\\n]*' : g === 'sql' ? '--[^\\n]*|/\\*[\\s\\S]*?\\*/' : g === 'css' ? '/\\*[\\s\\S]*?\\*/' : '//[^\\n]*|/\\*[\\s\\S]*?\\*/';
-  const rules = [];
-  if (g === 'json') rules.push(['t-p', `${dq}(?=\\s*:)`]);
-  rules.push(['t-c', comment], ['t-s', [dq, sq, g === 'js' ? bt : null].filter(Boolean).join('|')]);
-  if (g === 'css') {
-    rules.push(['t-k', '@[\\w-]+'], ['t-p', '[a-zA-Z-]+(?=\\s*:)'], ['t-n', '#[0-9a-fA-F]{3,8}\\b|\\b\\d*\\.?\\d+(?:px|em|rem|%|vh|vw|s|ms|deg)?\\b']);
-  } else {
-    if (g === 'sh') rules.push(['t-p', '\\$\\{?[A-Za-z_]\\w*\\}?']);
-    rules.push(['t-n', '\\b\\d[\\d_]*(?:\\.\\d+)?(?:[eE][+-]?\\d+)?\\b|\\b0x[0-9a-fA-F]+\\b']);
-    rules.push(['t-k', `\\b(?:${KW[g].split(' ').join('|')})\\b`]);
-    if (g !== 'json' && g !== 'sh') rules.push(['t-f', '\\b[A-Za-z_$][\\w$]*(?=\\()']);
-  }
-  const re = new RegExp(rules.map((r) => `(${r[1]})`).join('|'), g === 'sql' ? 'gi' : 'g');
-  let out = '', last = 0, m;
-  while ((m = re.exec(code))) {
-    if (m[0] === '') { re.lastIndex++; continue; }
-    out += esc(code.slice(last, m.index));
-    const i = m.findIndex((x, k) => k > 0 && x !== undefined);
-    out += `<span class="${rules[i - 1][0]}">${esc(m[0])}</span>`;
-    last = re.lastIndex;
-  }
-  return out + esc(code.slice(last));
-}
-function codeBlock(code, lang) {
+let enhanceQueued = false;
+new MutationObserver(() => {
+  if (enhanceQueued || !document.querySelector('.code[data-hl="pending"]')) return;
+  enhanceQueued = true;
+  requestAnimationFrame(() => { enhanceQueued = false; enhanceCode(); });
+}).observe(document.body, { childList: true, subtree: true });
+
+function codeBlock(code, lang, opts = {}) {
   const label = (lang || 'text').slice(0, 20);
-  return `<div class="code"><div class="code-head"><span class="code-lang">${esc(label)}</span><button type="button" class="copy-btn" data-action="copy" aria-label="Copy code">${icon('copy', 13)}<span>Copy</span></button></div><pre tabindex="0"><code>${highlight(code, lang)}</code></pre></div>`;
+  const cached = wantsHl(code, lang) ? hlCache.get(hlLang(lang) + '\0' + code) : null;
+  const state = cached ? 'done' : wantsHl(code, lang) ? 'pending' : 'none';
+  const pre = cached || `<pre tabindex="0"><code>${esc(code)}</code></pre>`;
+  return `<div class="code${opts.numbered ? ' numbered' : ''}" data-hl="${state}" data-lang="${esc(lang || '')}"><div class="code-head"><span class="code-lang">${esc(label)}</span><button type="button" class="copy-btn" data-action="copy" aria-label="Copy code">${icon('copy', 13)}<span>Copy</span></button></div>${pre}</div>`;
 }
 function fmtText(t) {
   return t
@@ -215,16 +220,50 @@ async function api(path, opts = {}) {
   return data;
 }
 
-/* Upload an image straight from the browser to Cloudinary (unsigned preset) and return its https URL. */
-async function uploadImage(file) {
+/* Upload a file straight from the browser to Cloudinary (unsigned preset) and return its https URL.
+   Images go to the "image" endpoint, text/code files to the "raw" endpoint. */
+const TEXT_EXTS = new Set(('txt md markdown rst log csv tsv json jsonc json5 yaml yml toml ini cfg conf xml html htm css scss sass less ' +
+  'js mjs cjs jsx ts tsx vue svelte py rb php java kt kts swift go rs c h cc cpp hpp cs m mm sh bash zsh fish ps1 bat sql graphql gql ' +
+  'lua r pl dart scala hs ex exs erl clj lisp diff patch dockerfile makefile gitignore env.example').split(' '));
+const IMAGE_ACCEPT = 'image/png,image/jpeg,image/gif,image/webp';
+const FILE_ACCEPT = IMAGE_ACCEPT + ',text/*,' + [...TEXT_EXTS].map((e) => '.' + e).join(',');
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024, MAX_FILE_BYTES = 2 * 1024 * 1024, MAX_PREVIEW_BYTES = 1024 * 1024;
+const fileExt = (name) => { const n = String(name || '').toLowerCase(); return n.includes('.') ? n.split('.').pop() : n; };
+const isTextFile = (f) => TEXT_EXTS.has(fileExt(f.name));
+async function uploadToCloudinary(file, raw) {
   const fd = new FormData();
   fd.append('file', file);
   fd.append('upload_preset', CLOUDINARY_PRESET);
+  const url = raw ? CLOUDINARY_URL.replace('/image/upload', '/raw/upload') : CLOUDINARY_URL;
   let res;
-  try { res = await fetch(CLOUDINARY_URL, { method: 'POST', body: fd }); } catch { throw new ApiError(0, 'Upload failed — check your connection and try again.'); }
+  try { res = await fetch(url, { method: 'POST', body: fd }); } catch { throw new ApiError(0, 'Upload failed — check your connection and try again.'); }
   let data = null; try { data = await res.json(); } catch { /* non-JSON */ }
-  if (!res.ok || !data?.secure_url) throw new ApiError(res.status, data?.error?.message || 'Image upload failed.');
+  if (!res.ok || !data?.secure_url) throw new ApiError(res.status, data?.error?.message || (raw ? 'File upload failed.' : 'Image upload failed.'));
   return data.secure_url;
+}
+const uploadImage = (file) => uploadToCloudinary(file, false);
+const uploadFile = (file) => uploadToCloudinary(file, true);
+
+/* Look + labels for file attachments (icon colour by type, friendly language name). */
+const FILE_KINDS = {
+  js: ['JavaScript', 'amber'], mjs: ['JavaScript', 'amber'], cjs: ['JavaScript', 'amber'], jsx: ['React JSX', 'amber'], ts: ['TypeScript', 'blue'], tsx: ['React TSX', 'blue'],
+  py: ['Python', 'blue'], rb: ['Ruby', 'red'], php: ['PHP', 'violet'], java: ['Java', 'red'], kt: ['Kotlin', 'violet'], swift: ['Swift', 'coral'], go: ['Go', 'teal'], rs: ['Rust', 'coral'],
+  c: ['C', 'blue'], h: ['C header', 'blue'], cpp: ['C++', 'blue'], cc: ['C++', 'blue'], hpp: ['C++ header', 'blue'], cs: ['C#', 'violet'],
+  html: ['HTML', 'coral'], htm: ['HTML', 'coral'], css: ['CSS', 'blue'], scss: ['SCSS', 'pink'], sass: ['Sass', 'pink'], less: ['Less', 'blue'], vue: ['Vue', 'green'], svelte: ['Svelte', 'coral'],
+  json: ['JSON', 'green'], jsonc: ['JSON', 'green'], json5: ['JSON5', 'green'], yaml: ['YAML', 'teal'], yml: ['YAML', 'teal'], toml: ['TOML', 'teal'], xml: ['XML', 'teal'], csv: ['CSV', 'green'], tsv: ['TSV', 'green'],
+  md: ['Markdown', 'slate'], markdown: ['Markdown', 'slate'], txt: ['Text file', 'slate'], log: ['Log file', 'slate'], rst: ['reStructuredText', 'slate'],
+  sh: ['Shell script', 'green'], bash: ['Shell script', 'green'], zsh: ['Shell script', 'green'], fish: ['Shell script', 'green'], ps1: ['PowerShell', 'blue'], bat: ['Batch file', 'slate'],
+  sql: ['SQL', 'amber'], graphql: ['GraphQL', 'pink'], gql: ['GraphQL', 'pink'], diff: ['Diff', 'slate'], patch: ['Patch', 'slate'], dockerfile: ['Dockerfile', 'blue'], makefile: ['Makefile', 'slate'],
+};
+function fileKind(name) {
+  const ext = fileExt(name);
+  const [label, tone] = FILE_KINDS[ext] || ['Text file', 'brand'];
+  const badge = (ext.length > 4 ? ext.slice(0, 3) : ext).toUpperCase() || 'TXT';
+  return { ext, label, tone, badge, lang: hlLang(ext) };
+}
+function fileIcon(name, size = 44) {
+  const k = fileKind(name);
+  return `<span class="fc-ico tone-${k.tone}" style="width:${size}px;height:${size}px" aria-hidden="true">${icon('file', Math.round(size * 0.62))}<i>${esc(k.badge)}</i></span>`;
 }
 
 /* ======================================================================
@@ -234,7 +273,7 @@ const S = {
   booted: false, user: null,
   rooms: [], dms: [], roomsLoaded: false, online: new Set(), unread: {},
   room: null, msgs: [], hasMore: false, nextBefore: null, drafts: {}, pending: null, sending: false,
-  wsOpen: false, syncSeq: null, syncTimer: null, syncBusy: false, retry: 0,
+  wsOpen: false, syncSeq: null, delSeq: null, syncTimer: null, syncBusy: false, retry: 0,
   web: { q: '', items: [], offset: 0, hasMore: false, loading: false },
   proj: new Map(), token: 0,
 };
@@ -242,9 +281,9 @@ const S = {
 /* ======================================================================
    Modal + forms helpers
    ====================================================================== */
-function openModal({ title, html, onOpen }) {
+function openModal({ title, html, onOpen, wide = false }) {
   const d = document.createElement('dialog');
-  d.className = 'modal';
+  d.className = 'modal' + (wide ? ' wide' : '');
   d.setAttribute('aria-labelledby', 'modal-title');
   d.innerHTML = `<div class="modal-head"><h2 id="modal-title">${esc(title)}</h2><button type="button" class="btn icon ghost" data-close aria-label="Close">${icon('x', 18)}</button></div><div class="modal-body">${html}</div>`;
   document.body.appendChild(d);
@@ -601,15 +640,15 @@ async function onSignup(e) {
 function ensureShell() {
   if ($('#shell')) return;
   app.innerHTML = `
-  <div class="shell" id="shell">
+  <div class="shell${getNavCollapsed() ? ' collapsed' : ''}" id="shell">
     <header class="topbar"><button class="btn icon ghost" data-action="toggle-nav" aria-label="Open navigation">${icon('menu', 22)}</button>${logo(30)}</header>
     <aside class="sidebar" id="sidebar" aria-label="Main">
-      <div style="padding:2px 8px">${logo(36)}</div>
+      <div class="sb-head">${logo(36)}<button type="button" class="btn icon ghost sb-toggle" data-action="toggle-collapse" aria-label="Collapse sidebar" title="Collapse sidebar">${icon('sidebar', 19)}</button></div>
       <nav class="nav" aria-label="Sections">
-        <a href="#/chat" data-nav="chat">${icon('chat')}<span>Chat</span><span class="count" id="nav-unread" hidden></span></a>
-        <a href="#/web" data-nav="web">${icon('globe')}<span>Web</span></a>
-        <a href="#/profile" data-nav="profile">${icon('user')}<span>Profile</span></a>
-        <a href="#/settings" data-nav="settings">${icon('settings')}<span>Settings</span></a>
+        <a href="#/chat" data-nav="chat" title="Chat">${icon('chat')}<span class="lbl">Chat</span><span class="count" id="nav-unread" hidden></span></a>
+        <a href="#/web" data-nav="web" title="Web">${icon('globe')}<span class="lbl">Web</span></a>
+        <a href="#/profile" data-nav="profile" title="Profile">${icon('user')}<span class="lbl">Profile</span></a>
+        <a href="#/settings" data-nav="settings" title="Settings">${icon('settings')}<span class="lbl">Settings</span></a>
       </nav>
       <div class="me-card" id="me-card"></div>
     </aside>
@@ -617,10 +656,19 @@ function ensureShell() {
     <main class="main" id="main" tabindex="-1"></main>
   </div>`;
   renderMeCard();
+  setNavCollapsed(getNavCollapsed(), false);
+}
+const NAV_KEY = 'webcord.navCollapsed';
+const getNavCollapsed = () => { try { return localStorage.getItem(NAV_KEY) === '1'; } catch { return false; } };
+function setNavCollapsed(on, save = true) {
+  $('#shell')?.classList.toggle('collapsed', on);
+  const b = $('.sb-toggle');
+  if (b) { const l = on ? 'Expand sidebar' : 'Collapse sidebar'; b.setAttribute('aria-label', l); b.title = l; b.setAttribute('aria-expanded', String(!on)); }
+  if (save) { try { localStorage.setItem(NAV_KEY, on ? '1' : '0'); } catch { /* storage unavailable */ } }
 }
 function renderMeCard() {
   const c = $('#me-card'); if (!c || !S.user) return;
-  c.innerHTML = `<a class="me-link" href="#/profile" aria-label="Your profile">${avatar(S.user, 40)}<div class="meta"><div class="name">${esc(S.user.display_name)}</div><div class="handle">@${esc(S.user.username)}</div><span class="status ${S.wsOpen ? 'on' : ''}" id="me-status">${S.wsOpen ? 'Online' : 'Connecting…'}</span></div></a>
+  c.innerHTML = `<a class="me-link" href="#/profile" aria-label="Your profile" title="${esc(S.user.display_name)} (@${esc(S.user.username)})">${avatar(S.user, 40)}<div class="meta"><div class="name">${esc(S.user.display_name)}</div><div class="handle">@${esc(S.user.username)}</div><span class="status ${S.wsOpen ? 'on' : ''}" id="me-status">${S.wsOpen ? 'Online' : 'Connecting…'}</span></div></a>
     <button class="btn icon ghost" data-action="logout" aria-label="Log out" title="Log out">${icon('logout', 18)}</button>`;
 }
 function updateStatus() {
@@ -645,10 +693,10 @@ function updateUnreadBadge() {
 /* ======================================================================
    Realtime (simple polling of /api/sync)
    ====================================================================== */
-const SYNC_VISIBLE_MS = 10000, SYNC_HIDDEN_MS = 15000;
+const SYNC_VISIBLE_MS = 3000, SYNC_HIDDEN_MS = 15000;
 function startSync() {
   if (!S.user || S.syncTimer) return;
-  S.syncSeq = null; S.retry = 0;
+  S.syncSeq = null; S.delSeq = null; S.retry = 0;
   const loop = async () => {
     if (!S.user) { S.syncTimer = null; return; }
     await syncOnce();
@@ -657,17 +705,18 @@ function startSync() {
   };
   S.syncTimer = setTimeout(loop, 0);
 }
-function stopSync() { clearTimeout(S.syncTimer); S.syncTimer = null; S.syncSeq = null; S.syncBusy = false; }
+function stopSync() { clearTimeout(S.syncTimer); S.syncTimer = null; S.syncSeq = null; S.delSeq = null; S.syncBusy = false; }
 async function syncOnce() {
   if (S.syncBusy || !S.user) return;
   S.syncBusy = true;
   try {
-    const r = await api('/sync' + (S.syncSeq == null ? '' : '?since=' + S.syncSeq), { quiet: true });
+    const r = await api('/sync' + (S.syncSeq == null ? '' : `?since=${S.syncSeq}&dsince=${S.delSeq ?? 0}`), { quiet: true });
     const wasOffline = !S.wsOpen;
     S.retry = 0; S.wsOpen = true; updateStatus();
     S.online = new Set(r.online || []); updatePresence();
     if (S.syncSeq != null) for (const m of r.messages) onRealtime({ event: 'message', data: { message: m } });
-    S.syncSeq = r.seq;
+    if (S.syncSeq != null) for (const id of r.deleted || []) removeMessage(id);
+    S.syncSeq = r.seq; S.delSeq = r.dseq ?? S.delSeq;
     if (wasOffline && S.syncSeq != null && S.room && parseHash()[0] === 'chat') refreshActiveRoom();
   } catch (e) {
     if (e.status === 401) { S.syncBusy = false; return sessionExpired(); }
@@ -759,10 +808,10 @@ async function openRoom(room, token) {
         <div id="pending"></div>
         <textarea id="msg-input" rows="1" maxlength="8000" aria-label="Message" placeholder="Message ${isDm ? '@' + esc(room.peer.username) : '#' + esc(room.name)}"></textarea>
         <div class="composer-bar">
-          <label class="btn icon ghost" for="file-input" title="Attach an image" aria-label="Attach an image">${icon('paperclip', 19)}</label>
-          <input type="file" id="file-input" class="sr-only" tabindex="-1" accept="image/png,image/jpeg,image/gif,image/webp">
+          <label class="btn icon ghost" for="file-input" title="Attach an image, text or code file" aria-label="Attach an image, text or code file">${icon('paperclip', 19)}</label>
+          <input type="file" id="file-input" class="sr-only" tabindex="-1" accept="${esc(FILE_ACCEPT)}">
           <button type="button" class="btn icon ghost" data-action="insert-code" title="Insert code block" aria-label="Insert code block">${icon('code', 19)}</button>
-          <span class="spacer"></span><span class="tip">Shift+Enter to send</span>
+          <span class="spacer"></span><span class="tip">Enter for a new line · Ctrl+Enter to send</span>
           <button class="btn primary sm" type="submit" id="send-btn">${icon('send', 15)} Send</button>
         </div>
       </div>
@@ -790,15 +839,73 @@ async function refreshActiveRoom() {
   } catch { /* try again on next event */ }
 }
 
+function attachmentHtml(m) {
+  const at = m.attachment;
+  if (at.is_image) return `<a href="${esc(at.url)}" target="_blank" rel="noopener"><img class="att-img" src="${esc(at.url)}" alt="${esc(at.name)}" loading="lazy" data-fb></a>`;
+  const k = fileKind(at.name);
+  return `<div class="file-card"><div class="fc-top">${fileIcon(at.name)}<div class="fc-meta"><b class="fc-name" title="${esc(at.name)}">${esc(at.name)}</b><small>${esc(k.label)}${at.size ? ` · ${fmtSize(at.size)}` : ''}</small></div></div>
+    <div class="fc-actions"><button type="button" class="btn sm" data-action="view-file" data-mid="${esc(m.id)}">${icon('eye', 15)} View</button><button type="button" class="btn sm" data-action="download-file" data-mid="${esc(m.id)}">${icon('download', 15)} Download</button></div></div>`;
+}
+async function downloadAttachment(at) {
+  try {
+    const res = await fetch(at.url);
+    if (!res.ok) throw new Error('bad status');
+    const blob = await res.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = at.name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  } catch {
+    const a = document.createElement('a');
+    a.href = at.url; a.download = at.name; a.target = '_blank'; a.rel = 'noopener';
+    document.body.appendChild(a); a.click(); a.remove();
+  }
+}
+function viewAttachment(at) {
+  const k = fileKind(at.name);
+  const m = openModal({
+    title: at.name, wide: true,
+    html: `<div class="fv-meta">${fileIcon(at.name, 36)}<span>${esc(k.label)}${at.size ? ` · ${fmtSize(at.size)}` : ''}</span></div><div id="fv-body"><div class="loading-row"><span class="spinner"></span>Loading file…</div></div><div class="modal-actions"><button class="btn" data-close type="button">Close</button><button class="btn primary" data-dl type="button">${icon('download', 16)} Download</button></div>`,
+    onOpen: async (d) => {
+      $('[data-dl]', d).addEventListener('click', () => downloadAttachment(at));
+      const body = $('#fv-body', d);
+      if (at.size > MAX_PREVIEW_BYTES) { body.innerHTML = `<div class="empty" style="padding:28px 16px"><h3>Too large to preview</h3><p>This file is ${fmtSize(at.size)}. Download it to open it.</p></div>`; return; }
+      try {
+        const res = await fetch(at.url);
+        if (!res.ok) throw new Error('bad status');
+        let text = await res.text();
+        let note = '';
+        if (text.length > 200000) { text = text.slice(0, 200000); note = '<p class="muted-p" style="margin-top:8px">Preview truncated — download the file to see everything.</p>'; }
+        body.innerHTML = codeBlock(text.replace(/\r\n/g, '\n'), k.lang, { numbered: true }) + note;
+      } catch { body.innerHTML = `<div class="empty" style="padding:28px 16px"><h3>Couldn’t load the preview</h3><p>You can still download the file.</p></div>`; }
+    },
+  });
+  return m;
+}
+function removeMessage(id) {
+  const i = S.msgs.findIndex((m) => m.id === id);
+  if (i < 0) return;
+  S.msgs.splice(i, 1);
+  if ($('#msgs')) renderMsgs('keep');
+}
+async function deleteMessage(id) {
+  const m = S.msgs.find((x) => x.id === id); if (!m || !S.room) return;
+  if (!(await confirmDialog('Delete this message? This can’t be undone.', 'Delete'))) return;
+  const roomId = S.room.id;
+  try {
+    await api(`/rooms/${encodeURIComponent(roomId)}/messages/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    if (S.room?.id === roomId) removeMessage(id);
+  } catch (e) {
+    if (e.status === 404 && S.room?.id === roomId) removeMessage(id); else toast(e.message, 'error');
+  }
+}
+
 function msgHtml(m, prev) {
   const grouped = prev && prev.author.id === m.author.id && m.created_at - prev.created_at < 5 * 60e3;
   const a = m.author;
-  const att = m.attachment
-    ? (m.attachment.is_image
-      ? `<a href="${esc(m.attachment.url)}" target="_blank" rel="noopener"><img class="att-img" src="${esc(m.attachment.url)}" alt="${esc(m.attachment.name)}" loading="lazy" data-fb></a>`
-      : `<a class="att-file" href="${esc(m.attachment.url)}" download="${esc(m.attachment.name)}"><span class="file-ico">${icon('file', 18)}</span><span style="min-width:0"><b>${esc(m.attachment.name)}</b><small>${fmtSize(m.attachment.size)} · Download</small></span></a>`)
-    : '';
-  return `<article class="msg ${grouped ? 'grouped' : ''}" data-id="${esc(m.id)}">${grouped ? '<span class="msg-gutter"></span>' : `<a class="msg-av" href="#/u/${encodeURIComponent(a.username)}" tabindex="-1" aria-hidden="true">${avatar(a, 38)}</a>`}<div class="msg-main">${grouped ? '' : `<header><a class="msg-name" href="#/u/${encodeURIComponent(a.username)}">${esc(a.display_name)}</a><span class="msg-user">@${esc(a.username)}</span><time datetime="${new Date(m.created_at).toISOString()}" title="${esc(fmtFull(m.created_at))}">${fmtTime(m.created_at)}</time></header>`}${m.body ? `<div class="msg-body">${renderMessage(m.body)}</div>` : ''}${att}</div></article>`;
+  const att = m.attachment ? attachmentHtml(m) : '';
+  const own = S.user && a.id === S.user.id;
+  return `<article class="msg ${grouped ? 'grouped' : ''}${own ? ' own' : ''}" data-id="${esc(m.id)}">${own ? `<button type="button" class="msg-del" data-action="delete-msg" data-mid="${esc(m.id)}" title="Delete message" aria-label="Delete message">${icon('trash', 15)}</button>` : ''}${grouped ? '<span class="msg-gutter"></span>' : `<a class="msg-av" href="#/u/${encodeURIComponent(a.username)}" tabindex="-1" aria-hidden="true">${avatar(a, 38)}</a>`}<div class="msg-main">${grouped ? '' : `<header><a class="msg-name" href="#/u/${encodeURIComponent(a.username)}">${esc(a.display_name)}</a><span class="msg-user">@${esc(a.username)}</span><time datetime="${new Date(m.created_at).toISOString()}" title="${esc(fmtFull(m.created_at))}">${fmtTime(m.created_at)}</time></header>`}${m.body ? `<div class="msg-body">${renderMessage(m.body)}</div>` : ''}${att}</div></article>`;
 }
 function renderMsgs(scrollBottom) {
   const box = $('#msgs'); if (!box) return;
@@ -806,10 +913,10 @@ function renderMsgs(scrollBottom) {
     box.innerHTML = `<div class="empty" style="margin:24px 8px"><div class="em-ico">${icon('chat', 24)}</div><h3>No messages yet</h3><p>Be the first to say something${S.room?.kind === 'dm' ? ` to ${esc(S.room.peer.display_name)}` : ''}. Use triple backticks for code.</p></div>`;
     return;
   }
-  const prevH = box.scrollHeight;
+  const prevH = box.scrollHeight, prevTop = box.scrollTop;
   box.innerHTML = (S.hasMore ? `<div class="load-older"><button class="btn sm" data-action="load-older">Load older messages</button></div>` : '') +
     S.msgs.map((m, i) => msgHtml(m, S.msgs[i - 1])).join('');
-  if (scrollBottom) box.scrollTop = box.scrollHeight; else box.scrollTop = box.scrollHeight - prevH;
+  if (scrollBottom === 'keep') box.scrollTop = prevTop; else if (scrollBottom) box.scrollTop = box.scrollHeight; else box.scrollTop = box.scrollHeight - prevH;
 }
 function addMessage(m, { own = false } = {}) {
   if (m.room_id !== S.room?.id || S.msgs.some((x) => x.id === m.id)) return;
@@ -837,13 +944,17 @@ function autoGrow(ta) { ta.style.height = 'auto'; ta.style.height = Math.min(ta.
 function renderPending() {
   const el = $('#pending'); if (!el) return;
   const p = S.pending;
-  el.innerHTML = p ? `<div class="pending-att">${p.uploading ? '<span class="spinner"></span>' : icon('paperclip', 16)}<span class="n">${esc(p.name)}${p.size ? ` · ${fmtSize(p.size)}` : ''}${p.uploading ? ' — uploading…' : ''}</span><button type="button" data-action="remove-pending" aria-label="Remove attachment">${icon('x', 16)}</button></div>` : '';
+  if (!p) { el.innerHTML = ''; return; }
+  const lead = p.uploading ? '<span class="spinner"></span>' : (p.isImage ? icon('paperclip', 16) : fileIcon(p.name, 34));
+  const sub = p.uploading ? 'Uploading…' : (p.isImage ? 'Image' : fileKind(p.name).label);
+  el.innerHTML = `<div class="pending-att">${lead}<span class="n"><b>${esc(p.name)}</b><small>${p.size ? `${fmtSize(p.size)} · ` : ''}${sub}</small></span><button type="button" data-action="remove-pending" aria-label="Remove attachment">${icon('x', 16)}</button></div>`;
 }
 function bindComposer() {
   const form = $('#composer'), ta = $('#msg-input');
   ta.addEventListener('input', () => autoGrow(ta));
+  // Enter = new line (default). Ctrl+Enter (or Cmd+Enter on Mac) sends.
   ta.addEventListener('keydown', (e) => {
-   if (e.key === 'Enter' && e.shiftKey && !e.isComposing) {e.preventDefault();form.requestSubmit();}
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !e.isComposing) { e.preventDefault(); form.requestSubmit(); }
   });
   form.addEventListener('submit', (e) => { e.preventDefault(); sendMessage(); });
   $('#file-input').addEventListener('change', onFilePicked);
@@ -867,14 +978,17 @@ async function sendMessage() {
 async function onFilePicked(e) {
   const file = e.target.files[0]; e.target.value = '';
   if (!file) return;
-  if (!/^image\//.test(file.type)) return toast('Only images can be attached (PNG, JPEG, GIF or WebP). Share code with a code block instead.', 'error');
-  if (file.size > 10 * 1024 * 1024) return toast('Images can be at most 10 MB.', 'error');
+  const isImage = /^image\/(png|jpeg|gif|webp)$/.test(file.type);
+  const isText = !isImage && isTextFile(file);
+  if (!isImage && !isText) return toast('You can attach images (PNG, JPEG, GIF, WebP) or text and code files (.txt, .md, .json, .js, .py, …).', 'error');
   if (!file.size) return toast('That file is empty.', 'error');
+  if (isImage && file.size > MAX_IMAGE_BYTES) return toast('Images can be at most 10 MB.', 'error');
+  if (isText && file.size > MAX_FILE_BYTES) return toast('Text and code files can be at most 2 MB.', 'error');
   const roomId = S.room.id;
-  S.pending = { uploading: true, name: file.name, size: file.size }; renderPending();
+  S.pending = { uploading: true, name: file.name, size: file.size, isImage }; renderPending();
   try {
-    const url = await uploadImage(file);
-    if (S.room?.id === roomId) { S.pending = { url, name: file.name, size: file.size }; renderPending(); }
+    const url = await (isImage ? uploadImage(file) : uploadFile(file));
+    if (S.room?.id === roomId) { S.pending = { url, name: file.name, size: file.size, isImage }; renderPending(); }
   } catch (err) { S.pending = null; renderPending(); toast(err.message, 'error'); }
 }
 function insertCodeBlock() {
@@ -1199,6 +1313,10 @@ document.addEventListener('click', async (e) => {
     case 'load-older': loadOlder(t); break;
     case 'insert-code': insertCodeBlock(); break;
     case 'remove-pending': S.pending = null; renderPending(); break;
+    case 'delete-msg': deleteMessage(t.dataset.mid); break;
+    case 'view-file': { const at = S.msgs.find((m) => m.id === t.dataset.mid)?.attachment; if (at) viewAttachment(at); break; }
+    case 'download-file': { const at = S.msgs.find((m) => m.id === t.dataset.mid)?.attachment; if (at) downloadAttachment(at); break; }
+    case 'toggle-collapse': setNavCollapsed(!$('#shell').classList.contains('collapsed')); break;
     case 'new-dm': openNewDm(); break;
     case 'retry-chat': S.roomsLoaded = false; route(); break;
     case 'retry-room': { const r = S.room; S.room = null; if (r) openRoom(r, S.token); break; }
