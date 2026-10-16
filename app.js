@@ -115,15 +115,14 @@ function getShiki() {
 }
 const hlLang = (l) => { l = String(l || '').toLowerCase().trim(); return LANG_ALIAS[l] || l; };
 const wantsHl = (code, lang) => { const l = hlLang(lang); return !!l && l !== 'text' && code.length <= 60000; };
-async function shikiPre(code, lang) {
+async function shikiPre(code, lang, cache = true) {
   const l = hlLang(lang), key = l + '\0' + code;
-  if (hlCache.has(key)) return hlCache.get(key);
+  if (cache && hlCache.has(key)) return hlCache.get(key);
   const { hl, known } = await getShiki();
   if (!(l in known)) return null;
   await hl.loadLanguage(l);
   const html = hl.codeToHtml(code, { lang: l, theme: SHIKI_THEME });
-  if (hlCache.size > 300) hlCache.delete(hlCache.keys().next().value);
-  hlCache.set(key, html);
+  if (cache) { if (hlCache.size > 300) hlCache.delete(hlCache.keys().next().value); hlCache.set(key, html); }
   return html;
 }
 /** Upgrade every not-yet-highlighted code block on the page. */
@@ -344,7 +343,7 @@ const V = {
 /* ======================================================================
    Router
    ====================================================================== */
-const APP_SECTIONS = ['chat', 'web', 'profile', 'settings', 'u'];
+const APP_SECTIONS = ['chat', 'web', 'code', 'profile', 'settings', 'u'];
 function parseHash() {
   return location.hash.replace(/^#\/?/, '').split('/').filter(Boolean).map((p) => { try { return decodeURIComponent(p); } catch { return p; } });
 }
@@ -354,6 +353,7 @@ async function route() {
   if (!S.booted) return;
   const [sec, arg] = parseHash();
   closeDrawers();
+  if (typeof csLeave === 'function' && (sec !== 'code' || !S.user)) csLeave(); // leaving a codespace: save and stop its timers
   if (!S.user) {
     if (sec === 'signup') return renderAuth('signup');
     if (sec === 'login' || sec === 'auth' || APP_SECTIONS.includes(sec)) return renderAuth('login');
@@ -364,10 +364,11 @@ async function route() {
     return route();
   }
   ensureShell();
-  setActiveNav(sec === 'u' ? 'web' : sec);
+  setActiveNav(sec === 'u' || sec === 'code' ? 'web' : sec);
   const token = ++S.token;
   if (sec === 'chat') return renderChat(arg, token);
-  if (sec === 'web') return renderWeb();
+  if (sec === 'code') return renderCodespace(arg, token);
+  if (sec === 'web') { S.webTab = arg === 'code' ? 'code' : 'sites'; return renderWeb(); }
   if (sec === 'profile') return renderProfile(S.user.username, true, token);
   if (sec === 'u') return renderProfile(arg, arg && arg.toLowerCase() === S.user.username.toLowerCase(), token);
   if (sec === 'settings') return renderSettings();
@@ -677,7 +678,7 @@ function updateStatus() {
 }
 function setActiveNav(sec) {
   $$('.nav a').forEach((a) => (a.dataset.nav === sec ? a.setAttribute('aria-current', 'page') : a.removeAttribute('aria-current')));
-  const titles = { chat: 'Chat', web: 'Web', profile: 'Profile', settings: 'Settings' };
+  const titles = { chat: 'Chat', web: S.webTab === 'code' ? 'Codespaces' : 'Web', code: 'Codespace', profile: 'Profile', settings: 'Settings' };
   document.title = `${titles[sec] || 'Webcord'} — Webcord`;
 }
 function setMain(html, flush = false) {
@@ -1048,10 +1049,13 @@ function projectCard(p) {
 }
 
 function renderWeb() {
+  const code = S.webTab === 'code';
   setMain(`<div class="page">
-    <div class="page-head"><div><h1>Web</h1><p>Websites built by developers in the Webcord community.</p></div><button class="btn primary" data-action="new-project">${icon('plus', 17)} Submit project</button></div>
-    <div class="toolbar"><div class="search">${icon('search')}<input class="input" id="proj-search" type="search" placeholder="Search projects by title or description" aria-label="Search projects" value="${esc(S.web.q)}"></div></div>
-    <div id="proj-results"></div></div>`);
+    <div class="page-head"><div><h1>Web</h1><p>${code ? 'Write, run and share code right in your browser — alone or together.' : 'Websites built by developers in the Webcord community.'}</p></div>${code ? `<button class="btn primary" data-action="new-codespace">${icon('plus', 17)} New codespace</button>` : `<button class="btn primary" data-action="new-project">${icon('plus', 17)} Submit project</button>`}</div>
+    <div class="seg" role="tablist" aria-label="Web sections"><a role="tab" href="#/web" aria-selected="${!code}">${icon('globe', 16)} Websites</a><a role="tab" href="#/web/code" aria-selected="${code}">${icon('code', 16)} Codespaces</a></div>
+    ${code ? '<div id="cs-list-root"></div>' : `<div class="toolbar"><div class="search">${icon('search')}<input class="input" id="proj-search" type="search" placeholder="Search projects by title or description" aria-label="Search projects" value="${esc(S.web.q)}"></div></div>
+    <div id="proj-results"></div>`}</div>`);
+  if (code) return csRenderList();
   $('#proj-search').addEventListener('input', debounce((e) => { S.web.q = e.target.value.trim(); loadProjects(true); }, 300));
   loadProjects(true);
 }
@@ -1327,7 +1331,7 @@ document.addEventListener('click', async (e) => {
     case 'retry-projects': loadProjects(true); break;
     case 'edit-profile': editProfileModal(); break;
     case 'message-user': startDm(t.dataset.username); break;
-    default: break;
+    default: if (typeof csAction === 'function') csAction(a, t, e); break;
   }
 });
 // Gracefully handle missing / blocked preview images by removing the broken <img> (a placeholder sits underneath).
