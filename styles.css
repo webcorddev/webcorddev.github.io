@@ -582,3 +582,5 @@ dialog.modal.wide .code pre { max-height: 62vh; }
   .opts, .opts.three { grid-template-columns: 1fr; }
   .sh-add-row { flex-wrap: wrap; } .sh-find { flex-basis: 100%; }
 }
+
+.cs-files.drop, .cs-editor.drop { outline: 2px dashed var(--brand); outline-offset: -4px; background-color: var(--brand-soft); }
