@@ -1,0 +1,409 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Preview</title>
+<!--
+  Webcord codespace runner.
+  This page is loaded inside <iframe sandbox="allow-scripts ..."> (WITHOUT allow-same-origin), so everything that runs here — including code
+  written by other people — lives in an opaque origin: it can't read Webcord's login token, cookies or storage.
+  It deliberately has NO Content-Security-Policy so user code can load whatever a normal web page could.
+
+  The editor posts { src:'cs-host', type:'run', runId, kind, entry, files } and this page turns the codespace files into a running page:
+    html → local <script src>, <link href>, <img src>, CSS url()/@import and ES-module imports are wired to the other files,
+           then the finished page is written into this document (like loading it in a real browser tab)
+    js   → runs the file (ES modules + imports between files) and shows console output
+    py   → runs the file in Pyodide (CPython in WebAssembly) with every codespace file available on disk
+    md / svg / json / text → rendered
+  Console output, errors, link clicks and page titles are sent back with postMessage.
+-->
+<style>
+  html, body { margin: 0; min-height: 100%; }
+  body { font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; color: #17142e; background: #fff; }
+  .term { margin: 0; padding: 14px 16px; font: 13px/1.6 ui-monospace, "SF Mono", Menlo, Consolas, monospace; white-space: pre-wrap; word-break: break-word; }
+  .term .err { color: #c0283a; } .term .warn { color: #a86a00; } .term .dim { color: #8a87a3; } .term .ok { color: #16a36a; }
+  .msg { min-height: 100vh; display: grid; place-items: center; text-align: center; padding: 24px; color: #6b6887; }
+  .msg b { display: block; font-size: 40px; color: #17142e; letter-spacing: -.03em; }
+  .doc { max-width: 760px; margin: 0 auto; padding: 24px 22px 60px; }
+  .doc pre { background: #f4f3fb; padding: 12px 14px; border-radius: 10px; overflow: auto; }
+  .doc code { font-family: ui-monospace, Menlo, Consolas, monospace; background: #f4f3fb; padding: 1px 5px; border-radius: 5px; }
+  .doc pre code { background: none; padding: 0; }
+  .doc blockquote { margin: 0; padding-left: 14px; border-left: 3px solid #d8d5ee; color: #6b6887; }
+  .doc a { color: #5b4cf0; } .doc img { max-width: 100%; } .doc hr { border: 0; border-top: 1px solid #e6e4f3; }
+  .svgwrap { min-height: 100vh; display: grid; place-items: center; padding: 16px; box-sizing: border-box; } .svgwrap img { max-width: 100%; max-height: 92vh; }
+</style>
+</head>
+<body>
+<script>
+'use strict';
+const PYODIDE_BASE = (new URLSearchParams(location.search).get('pyodide')) || 'https://cdn.jsdelivr.net/pyodide/v0.26.4/full/';
+const MAX_SERIALIZED = 1.5 * 1024 * 1024;
+
+/* ---------- helpers shared with the injected "bridge" (they are stringified into the user's page, so they must be self-contained) ---------- */
+
+/** Resolve a URL written in `from` (a codespace path) against the codespace files. Returns the file path, or null (external / not found). */
+function resolveRef(files, from, ref) {
+  ref = String(ref == null ? '' : ref).trim();
+  if (!ref || ref[0] === '#' || ref.indexOf('//') === 0 || /^[a-z][a-z0-9+.-]*:/i.test(ref)) return null;
+  let clean = ref.split('#')[0].split('?')[0];
+  try { clean = decodeURIComponent(clean); } catch (e) { /* keep as is */ }
+  const base = clean[0] === '/' ? '' : from.slice(0, from.lastIndexOf('/') + 1);
+  const out = [];
+  for (const seg of (base + clean).split('/')) {
+    if (!seg || seg === '.') continue;
+    if (seg === '..') out.pop(); else out.push(seg);
+  }
+  const p = out.join('/');
+  if (Object.prototype.hasOwnProperty.call(files, p)) return p;
+  const lower = p.toLowerCase();
+  for (const k of Object.keys(files)) if (k.toLowerCase() === lower) return k;
+  if (!clean || clean.slice(-1) === '/') {                       // "folder/" → folder/index.html
+    const idx = (p ? p + '/' : '') + 'index.html';
+    if (Object.prototype.hasOwnProperty.call(files, idx)) return idx;
+  }
+  return null;
+}
+
+/** Turn any value into a short readable string (used for console output). */
+function fmt(v, depth, seen) {
+  depth = depth || 0; seen = seen || new Set();
+  const t = typeof v;
+  if (t === 'string') return depth ? JSON.stringify(v) : v;
+  if (v === null || v === undefined || t === 'number' || t === 'boolean' || t === 'bigint') return String(v);
+  if (t === 'symbol') return v.toString();
+  if (t === 'function') return 'ƒ ' + (v.name || '(anonymous)') + '()';
+  if (v instanceof Error) return v.stack || (v.name + ': ' + v.message);
+  if (seen.has(v)) return '[Circular]';
+  if (depth > 3) return Array.isArray(v) ? '[…]' : '{…}';
+  seen.add(v);
+  try {
+    if (typeof Node !== 'undefined' && v instanceof Node) return '<' + String(v.nodeName || '').toLowerCase() + '>';
+    if (Array.isArray(v)) return '[' + v.slice(0, 100).map((x) => fmt(x, depth + 1, seen)).join(', ') + (v.length > 100 ? ', … ' + (v.length - 100) + ' more' : '') + ']';
+    if (v instanceof Map) return 'Map(' + v.size + ') {' + [...v].slice(0, 50).map((e) => fmt(e[0], depth + 1, seen) + ' => ' + fmt(e[1], depth + 1, seen)).join(', ') + '}';
+    if (v instanceof Set) return 'Set(' + v.size + ') {' + [...v].slice(0, 50).map((e) => fmt(e, depth + 1, seen)).join(', ') + '}';
+    if (v instanceof Date) return v.toISOString();
+    if (v instanceof RegExp) return String(v);
+    const keys = Object.keys(v).slice(0, 50);
+    const ctor = v.constructor && v.constructor.name && v.constructor.name !== 'Object' ? v.constructor.name + ' ' : '';
+    return keys.length ? ctor + '{ ' + keys.map((k) => k + ': ' + fmt(v[k], depth + 1, seen)).join(', ') + ' }' : ctor + '{}';
+  } catch (e) { return String(v); } finally { seen.delete(v); }
+}
+
+const MIME = { html: 'text/html', htm: 'text/html', css: 'text/css', js: 'text/javascript', mjs: 'text/javascript', json: 'application/json', svg: 'image/svg+xml', txt: 'text/plain', md: 'text/markdown', xml: 'application/xml', csv: 'text/csv' };
+const extOf = (p) => (p.indexOf('.') < 0 ? '' : p.split('.').pop().toLowerCase());
+const mimeOf = (p) => MIME[extOf(p)] || 'text/plain';
+const escHtml = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+/* ---------- messaging ---------- */
+let runId = 0;
+const post = (m) => { try { parent.postMessage(Object.assign({ src: 'cs-runner', runId }, m), '*'); } catch (e) { /* no parent */ } };
+window.addEventListener('message', (e) => {
+  const d = e.data;
+  if (e.source !== parent || !d || d.src !== 'cs-host' || d.type !== 'run') return;
+  runId = d.runId;
+  run(d).catch((err) => { post({ type: 'console', level: 'error', text: fmt(err) }); showError(fmt(err)); });
+});
+post({ type: 'ready' });
+
+/* ---------- module / blob plumbing ---------- */
+let files = {};
+const blobs = new Map();            // path -> blob: URL (raw file)
+const modules = new Map();          // path -> blob: URL (ES module with imports rewritten)
+const blobFor = (p) => { if (!blobs.has(p)) blobs.set(p, URL.createObjectURL(new Blob([files[p]], { type: mimeOf(p) }))); return blobs.get(p); };
+
+function rewriteImports(code, from, stack) {
+  return code.replace(/(\bfrom\s*|\bimport\s*\(\s*|\bimport\s*)(["'])([^"'\n]+)\2/g, (m, pre, q, spec) => {
+    if (!/^(\.{0,2}\/)/.test(spec)) return m;
+    const p = resolveRef(files, from, spec);
+    if (!p) return m;
+    const url = moduleUrl(p, stack);
+    return url ? pre + q + url + q : m;
+  });
+}
+function moduleUrl(p, stack) {
+  stack = stack || [];
+  if (modules.has(p)) return modules.get(p);
+  if (stack.indexOf(p) >= 0) return null;             // circular import: can't be expressed with blob URLs
+  const url = URL.createObjectURL(new Blob([rewriteImports(files[p], p, stack.concat(p))], { type: 'text/javascript' }));
+  modules.set(p, url);
+  return url;
+}
+function processCss(css, from, seen) {
+  seen = seen || [from];
+  css = css.replace(/@import\s+(?:url\(\s*)?(["']?)([^"')\s;]+)\1\s*\)?([^;]*);/g, (m, q, ref) => {
+    const p = resolveRef(files, from, ref);
+    if (!p || seen.indexOf(p) >= 0 || seen.length > 8) return m;
+    return processCss(files[p], p, seen.concat(p));
+  });
+  return css.replace(/url\(\s*(["']?)([^"')]+)\1\s*\)/g, (m, q, ref) => {
+    const p = resolveRef(files, from, ref);
+    return p ? 'url("' + blobFor(p) + '")' : m;
+  });
+}
+
+/* ---------- code that is injected into the user's page ---------- */
+function bridge(cfg, fmt, resolveRef) {
+  const send = (m) => { try { parent.postMessage(Object.assign({ src: 'cs-runner', runId: cfg.runId }, m), '*'); } catch (e) { /* */ } };
+  const log = (level, text) => send({ type: 'console', level: level, text: text });
+  ['log', 'info', 'warn', 'error', 'debug'].forEach((k) => {
+    const orig = console[k];
+    console[k] = function () { log(k, Array.prototype.map.call(arguments, (a) => fmt(a)).join(' ')); return orig.apply(console, arguments); };
+  });
+  const origClear = console.clear; console.clear = function () { send({ type: 'clear' }); return origClear.apply(console, arguments); };
+  const origTable = console.table; console.table = function (d) { log('log', fmt(d)); return origTable.apply(console, arguments); };
+  window.addEventListener('error', (e) => {
+    if (e.target && e.target !== window && e.target.tagName) { const u = e.target.src || e.target.href || ''; if (u && u.indexOf('blob:') !== 0) log('error', 'Failed to load resource: ' + u); return; }
+    log('error', (e.error && e.error.stack) || (e.message + (e.lineno ? ' (line ' + e.lineno + ')' : '')));
+  }, true);
+  window.addEventListener('unhandledrejection', (e) => log('error', 'Unhandled promise rejection: ' + fmt(e.reason)));
+
+  // The sandbox has no origin, so localStorage / sessionStorage / cookies would throw. Give pages in-memory versions so ordinary apps keep working.
+  const memStorage = () => {
+    const data = new Map();
+    return {
+      get length() { return data.size; }, key: (i) => [...data.keys()][i] ?? null,
+      getItem: (k) => (data.has(String(k)) ? data.get(String(k)) : null),
+      setItem: (k, v) => { data.set(String(k), String(v)); }, removeItem: (k) => { data.delete(String(k)); }, clear: () => data.clear(),
+    };
+  };
+  ['localStorage', 'sessionStorage'].forEach((name) => {
+    let ok = true; try { window[name].getItem('x'); } catch (e) { ok = false; }
+    if (!ok) { try { Object.defineProperty(window, name, { value: memStorage(), configurable: true }); } catch (e) { /* */ } }
+  });
+  try { void document.cookie; } catch (e) {
+    const jar = new Map();
+    try {
+      Object.defineProperty(document, 'cookie', {
+        configurable: true,
+        get: () => [...jar].map((e) => e[0] + '=' + e[1]).join('; '),
+        set: (v) => { const kv = String(v).split(';')[0]; const i = kv.indexOf('='); if (i > 0) jar.set(kv.slice(0, i).trim(), kv.slice(i + 1).trim()); },
+      });
+    } catch (e2) { /* */ }
+  }
+
+  // fetch() / XMLHttpRequest for files that live in the codespace (data.json, templates, …)
+  const rawFetch = window.fetch;
+  window.fetch = function (input, init) {
+    try {
+      const url = typeof input === 'string' ? input : (input && input.url) || String(input);
+      if (!/^[a-z][a-z0-9+.-]*:/i.test(url) && url.indexOf('//') !== 0) {
+        const p = resolveRef(cfg.files, cfg.entry, url);
+        return Promise.resolve(p == null
+          ? new Response('Not found: ' + url, { status: 404, statusText: 'Not Found' })
+          : new Response(cfg.files[p], { status: 200, headers: { 'content-type': cfg.mimes[p] || 'text/plain' } }));
+      }
+    } catch (e) { /* fall through */ }
+    return rawFetch.apply(window, arguments);
+  };
+  const rawOpen = XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open = function (method, url) {
+    try {
+      if (typeof url === 'string' && !/^[a-z][a-z0-9+.-]*:/i.test(url) && url.indexOf('//') !== 0) {
+        const p = resolveRef(cfg.files, cfg.entry, url);
+        arguments[1] = p == null ? 'blob:null/not-found' : URL.createObjectURL(new Blob([cfg.files[p]], { type: cfg.mimes[p] || 'text/plain' }));
+      }
+    } catch (e) { /* fall through */ }
+    return rawOpen.apply(this, arguments);
+  };
+
+  // Links: between codespace files they navigate the preview; external ones open in a new tab.
+  document.addEventListener('click', (e) => {
+    if (e.defaultPrevented || e.button || e.ctrlKey || e.metaKey || e.shiftKey) return;
+    const a = e.target && e.target.closest && e.target.closest('a[href]');
+    if (!a || a.hasAttribute('download')) return;
+    const href = a.getAttribute('href') || '';
+    if (!href || href[0] === '#' || /^(javascript|mailto|tel|blob|data):/i.test(href)) return;
+    e.preventDefault();
+    if (/^[a-z][a-z0-9+.-]*:/i.test(href) || href.indexOf('//') === 0) { window.open(a.href, '_blank', 'noopener,noreferrer'); return; }
+    send({ type: 'navigate', href: href, path: resolveRef(cfg.files, cfg.entry, href) });
+  });
+  document.addEventListener('submit', (e) => {          // a <form> without a handler would reload a missing server URL
+    if (e.defaultPrevented) return;
+    const action = e.target.getAttribute('action');
+    e.preventDefault();
+    if (action && !/^[a-z][a-z0-9+.-]*:/i.test(action)) send({ type: 'navigate', href: action, path: resolveRef(cfg.files, cfg.entry, action) });
+  });
+  window.addEventListener('load', () => send({ type: 'loaded', title: document.title || '' }));
+}
+
+/* ---------- running ---------- */
+async function run(d) {
+  files = d.files || {};
+  blobs.clear(); modules.clear();
+  const kind = d.kind, entry = d.entry;
+  if (kind === 'html') return runHtml(entry);
+  if (kind === 'js') return runJs(entry);
+  if (kind === 'py') return runPy(entry);
+  if (kind === 'md') return showDoc(renderMarkdown(files[entry]));
+  if (kind === 'svg') return showSvg(entry);
+  if (kind === 'message') return showMessage(d.title, d.text);
+  return showText(entry);
+}
+
+function runHtml(entry) {
+  const src = files[entry] || '';
+  const doc = new DOMParser().parseFromString(src, 'text/html');
+
+  doc.querySelectorAll('link[href]').forEach((l) => {
+    const p = resolveRef(files, entry, l.getAttribute('href')); if (!p) return;
+    if ((l.getAttribute('rel') || '').toLowerCase().split(/\s+/).indexOf('stylesheet') >= 0) {
+      const st = doc.createElement('style');
+      if (l.getAttribute('media')) st.setAttribute('media', l.getAttribute('media'));
+      st.textContent = processCss(files[p], p);
+      l.replaceWith(st);
+    } else l.setAttribute('href', blobFor(p));
+  });
+  doc.querySelectorAll('style').forEach((st) => { st.textContent = processCss(st.textContent, entry); });
+  doc.querySelectorAll('[style*="url("]').forEach((el) => { el.setAttribute('style', processCss(el.getAttribute('style'), entry)); });
+  doc.querySelectorAll('script[src]').forEach((s) => {
+    const p = resolveRef(files, entry, s.getAttribute('src')); if (!p) return;
+    s.setAttribute('src', (s.getAttribute('type') || '').toLowerCase() === 'module' ? (moduleUrl(p) || blobFor(p)) : blobFor(p));
+  });
+  doc.querySelectorAll('script[type="module"]:not([src])').forEach((s) => { s.textContent = rewriteImports(s.textContent, entry, [entry]); });
+  doc.querySelectorAll('img[src],source[src],video[src],audio[src],track[src],embed[src],input[src]').forEach((el) => {
+    const p = resolveRef(files, entry, el.getAttribute('src')); if (p) el.setAttribute('src', blobFor(p));
+  });
+  doc.querySelectorAll('[srcset]').forEach((el) => {
+    el.setAttribute('srcset', el.getAttribute('srcset').split(',').map((part) => {
+      const bits = part.trim().split(/\s+/); const p = resolveRef(files, entry, bits[0]);
+      return p ? [blobFor(p)].concat(bits.slice(1)).join(' ') : part.trim();
+    }).join(', '));
+  });
+  doc.querySelectorAll('video[poster]').forEach((el) => { const p = resolveRef(files, entry, el.getAttribute('poster')); if (p) el.setAttribute('poster', blobFor(p)); });
+  doc.querySelectorAll('object[data]').forEach((el) => { const p = resolveRef(files, entry, el.getAttribute('data')); if (p) el.setAttribute('data', blobFor(p)); });
+  doc.querySelectorAll('iframe[src]').forEach((el) => {          // <iframe src="other.html"> → render that file too
+    const p = resolveRef(files, entry, el.getAttribute('src')); if (!p) return;
+    el.setAttribute('src', extOf(p) === 'html' || extOf(p) === 'htm' ? URL.createObjectURL(new Blob([buildNested(p)], { type: 'text/html' })) : blobFor(p));
+  });
+  doc.querySelectorAll('base').forEach((b) => b.remove());
+
+  const mimes = {}; let total = 0; const copy = {};
+  for (const p of Object.keys(files)) { total += files[p].length; if (total > MAX_SERIALIZED) break; copy[p] = files[p]; mimes[p] = mimeOf(p); }
+  const cfg = { runId: runId, entry: entry, files: copy, mimes: mimes };
+  const bridgeEl = doc.createElement('script');
+  const safeJson = JSON.stringify(cfg).replace(/</g, '\\u003c').split(String.fromCharCode(0x2028)).join('\\u2028').split(String.fromCharCode(0x2029)).join('\\u2029');
+  bridgeEl.textContent = '(' + bridge.toString() + ')(' + safeJson + ', ' + fmt.toString() + ', ' + resolveRef.toString() + ');';
+  doc.head.insertBefore(bridgeEl, doc.head.firstChild);
+
+  const html = (/^\s*<!doctype/i.test(src) ? '<!DOCTYPE html>' : '') + doc.documentElement.outerHTML;
+  document.open(); document.write(html); document.close();
+}
+function buildNested(p) {
+  const doc = new DOMParser().parseFromString(files[p], 'text/html');
+  doc.querySelectorAll('link[href]').forEach((l) => { const q = resolveRef(files, p, l.getAttribute('href')); if (!q) return; if (/stylesheet/i.test(l.getAttribute('rel') || '')) { const st = doc.createElement('style'); st.textContent = processCss(files[q], q); l.replaceWith(st); } });
+  doc.querySelectorAll('script[src]').forEach((s) => { const q = resolveRef(files, p, s.getAttribute('src')); if (q) s.setAttribute('src', (s.getAttribute('type') || '') === 'module' ? (moduleUrl(q) || blobFor(q)) : blobFor(q)); });
+  doc.querySelectorAll('img[src]').forEach((el) => { const q = resolveRef(files, p, el.getAttribute('src')); if (q) el.setAttribute('src', blobFor(q)); });
+  return '<!DOCTYPE html>' + doc.documentElement.outerHTML;
+}
+
+/* terminal-style output for js / python */
+let out = null;
+function terminal(title) {
+  document.body.innerHTML = '<pre class="term" id="out" aria-live="polite"></pre>';
+  out = document.getElementById('out');
+  if (title) line('dim', title);
+}
+function line(cls, text) {
+  const s = document.createElement('span'); if (cls) s.className = cls; s.textContent = text + '\n';
+  out.appendChild(s); window.scrollTo(0, document.body.scrollHeight);
+}
+function showError(text) { if (!out) terminal(); line('err', text); }
+
+async function runJs(entry) {
+  terminal('$ node ' + entry);
+  const ids = { log: '', info: '', debug: 'dim', warn: 'warn', error: 'err' };
+  Object.keys(ids).forEach((k) => { console[k] = function () { line(ids[k], Array.prototype.map.call(arguments, (a) => fmt(a)).join(' ')); }; });
+  console.table = (d) => line('', fmt(d));
+  console.clear = () => { out.textContent = ''; };
+  window.addEventListener('error', (e) => line('err', (e.error && e.error.stack) || e.message));
+  window.addEventListener('unhandledrejection', (e) => line('err', 'Unhandled promise rejection: ' + fmt(e.reason)));
+  try {
+    const url = moduleUrl(entry) || blobFor(entry);
+    await import(url);
+    line('dim', '\n— finished —');
+  } catch (e) { line('err', fmt(e)); }
+  post({ type: 'done' });
+}
+
+let pyodideP = null;
+function loadPyodideOnce() {
+  if (!pyodideP) pyodideP = new Promise((resolve, reject) => {
+    const s = document.createElement('script'); s.src = PYODIDE_BASE + 'pyodide.js';
+    s.onload = () => window.loadPyodide({ indexURL: PYODIDE_BASE }).then(resolve, reject);
+    s.onerror = () => reject(new Error('Could not load Python (Pyodide). Check your internet connection and try again.'));
+    document.head.appendChild(s);
+  });
+  return pyodideP;
+}
+async function runPy(entry) {
+  terminal('$ python ' + entry);
+  line('dim', 'Starting Python…');
+  let py;
+  try { py = await loadPyodideOnce(); } catch (e) { line('err', e.message); return post({ type: 'done' }); }
+  out.textContent = ''; line('dim', '$ python ' + entry);
+  py.setStdout({ batched: (s) => line('', s) });
+  py.setStderr({ batched: (s) => line('err', s) });
+  py.setStdin({ stdin: () => { const r = window.prompt('Python is asking for input()'); if (r === null) return undefined; line('dim', '> ' + r); return r; } });
+  const root = py.FS.cwd();
+  for (const p of Object.keys(files)) {
+    const i = p.lastIndexOf('/');
+    if (i > 0) py.FS.mkdirTree(root + '/' + p.slice(0, i));
+    py.FS.writeFile(root + '/' + p, files[p]);
+  }
+  try {
+    try { await py.loadPackagesFromImports(files[entry]); } catch (e) { line('dim', 'Note: ' + e.message); }
+    const g = py.globals.get('dict')(); g.set('__name__', '__main__');
+    await py.runPythonAsync(files[entry], { globals: g });
+    g.destroy();
+    line('dim', '\n— finished —');
+  } catch (e) {
+    let msg = String(e.message || e);
+    const k = msg.indexOf('File "<exec>"');
+    if (k > 0) msg = 'Traceback (most recent call last):\n  ' + msg.slice(k).replace(/\n$/, '');
+    line('err', msg);
+  }
+  post({ type: 'done' });
+}
+
+/* rendered views */
+function showMessage(title, text) {
+  document.body.innerHTML = '<div class="msg"><div><b>' + escHtml(title || '') + '</b>' + escHtml(text || '') + '</div></div>';
+  post({ type: 'done' });
+}
+function showDoc(html) { document.body.innerHTML = '<article class="doc">' + html + '</article>'; post({ type: 'done' }); }
+function showSvg(entry) { document.body.innerHTML = '<div class="svgwrap"><img alt=""></div>'; document.querySelector('img').src = blobFor(entry); post({ type: 'done' }); }
+function showText(entry) {
+  let text = files[entry] || '';
+  if (extOf(entry) === 'json') { try { text = JSON.stringify(JSON.parse(text), null, 2); } catch (e) { /* show raw */ } }
+  document.body.innerHTML = '<pre class="term"></pre>'; document.querySelector('pre').textContent = text; post({ type: 'done' });
+}
+function renderMarkdown(md) {
+  const inline = (s) => escHtml(s)
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (m, alt, u) => { const p = resolveRef(files, '', u); return '<img alt="' + alt + '" src="' + (p ? blobFor(p) : (/^https?:/i.test(u) ? u : '')) + '">'; })
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
+    .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>').replace(/(^|[^*])\*([^*]+)\*/g, '$1<i>$2</i>').replace(/~~([^~]+)~~/g, '<del>$1</del>');
+  const lines = String(md || '').replace(/\r\n/g, '\n').split('\n'); const html = []; let para = [], list = null, fence = null;
+  const flushP = () => { if (para.length) { html.push('<p>' + para.map(inline).join('<br>') + '</p>'); para = []; } };
+  const flushL = () => { if (list) { html.push('<' + list.t + '>' + list.items.map((i) => '<li>' + inline(i) + '</li>').join('') + '</' + list.t + '>'); list = null; } };
+  for (const ln of lines) {
+    if (fence !== null) { if (/^```/.test(ln)) { html.push('<pre><code>' + escHtml(fence.join('\n')) + '</code></pre>'); fence = null; } else fence.push(ln); continue; }
+    let m;
+    if (/^```/.test(ln)) { flushP(); flushL(); fence = []; }
+    else if ((m = /^(#{1,6})\s+(.*)$/.exec(ln))) { flushP(); flushL(); html.push('<h' + m[1].length + '>' + inline(m[2]) + '</h' + m[1].length + '>'); }
+    else if (/^\s*([-*_])\1\1+\s*$/.test(ln)) { flushP(); flushL(); html.push('<hr>'); }
+    else if ((m = /^\s*[-*+]\s+(.*)$/.exec(ln))) { flushP(); if (!list || list.t !== 'ul') { flushL(); list = { t: 'ul', items: [] }; } list.items.push(m[1]); }
+    else if ((m = /^\s*\d+[.)]\s+(.*)$/.exec(ln))) { flushP(); if (!list || list.t !== 'ol') { flushL(); list = { t: 'ol', items: [] }; } list.items.push(m[1]); }
+    else if ((m = /^>\s?(.*)$/.exec(ln))) { flushP(); flushL(); html.push('<blockquote>' + inline(m[1]) + '</blockquote>'); }
+    else if (!ln.trim()) { flushP(); flushL(); }
+    else { flushL(); para.push(ln); }
+  }
+  if (fence !== null) html.push('<pre><code>' + escHtml(fence.join('\n')) + '</code></pre>');
+  flushP(); flushL();
+  return html.join('\n');
+}
+</script>
+</body>
+</html>
