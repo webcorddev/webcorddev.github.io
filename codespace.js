@@ -204,6 +204,7 @@ function startEditor(r) {
         <button class="btn primary sm" data-cs="run" title="Runs the open file. For CSS or JS inside a website it runs the page. (Ctrl/⌘ + Enter)">${icon('play', 15)} Run</button>
       </div>
     </header>
+    <input type="file" id="cs-upload" multiple hidden tabindex="-1" aria-hidden="true">
     <div class="cs-panes" role="tablist" aria-label="Editor panes"><button role="tab" data-cs="pane" data-pane="code" aria-selected="true">${icon('code', 15)} Code</button><button role="tab" data-cs="pane" data-pane="preview" aria-selected="false">${icon('eye', 15)} Preview</button></div>
     <div class="cs-body" id="cs-body" data-pane="code" style="--left:${Math.min(75, Math.max(25, left))}%">
       <section class="cs-left" id="cs-left">
@@ -405,6 +406,18 @@ function bindEditor(root) {
     if (e.key === 'Enter' && !mod && !e.shiftKey && !e.altKey && !e.isComposing) { autoIndent(e); return; }
     if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); saveAll(); return; }
     if (mod && e.key === 'Enter') { e.preventDefault(); runPreview(); }
+  });
+  // uploading: a real (hidden) file input + drag-and-drop onto the file list or the editor
+  const up = $('#cs-upload');
+  if (up) {
+    up.accept = [...CS_EXTS].map((x) => '.' + x).join(',');
+    up.addEventListener('change', () => { const list = [...up.files]; up.value = ''; if (list.length) uploadFiles(list); });
+  }
+  ['#cs-files', '.cs-editor'].forEach((sel) => {
+    const el = $(sel, root); if (!el) return;
+    el.addEventListener('dragover', (e) => { if (canEdit() && e.dataTransfer && [...e.dataTransfer.types].includes('Files')) { e.preventDefault(); el.classList.add('drop'); } });
+    el.addEventListener('dragleave', () => el.classList.remove('drop'));
+    el.addEventListener('drop', (e) => { el.classList.remove('drop'); if (!canEdit() || !e.dataTransfer?.files?.length) return; e.preventDefault(); uploadFiles([...e.dataTransfer.files]); });
   });
   $('#cs-auto').addEventListener('change', (e) => { E.auto = e.target.checked; lsSet('webcord.cs.auto', E.auto ? '1' : '0'); if (E.auto) runPreview(undefined, { auto: true }); });
   $('#pv-url').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); navigateTo(e.target.value); } });
@@ -631,7 +644,8 @@ async function deleteFile(path) {
 }
 async function uploadFiles(list) {
   const X = E; if (!canEdit()) return;
-  let added = 0;
+  let added = 0, firstPath = null;
+  if (!X) return;
   for (const file of list) {
     const path = file.name.replace(/\s+/g, '-');
     const err = csPathError(path);
@@ -643,10 +657,10 @@ async function uploadFiles(list) {
       const r = await api(`/codespaces/${encodeURIComponent(X.id)}/files`, { method: 'PUT', body: { path, content, create: true } });
       if (E !== X) return;
       X.files.set(path, { content, saved: content, rev: r.file.rev, dirty: false, saving: false, conflict: null, by: S.user.username, error: '' });
-      added++;
+      added++; firstPath = firstPath || path;
     } catch (e) { toast(`${file.name}: ${e.message}`, 'error'); }
   }
-  if (added) { renderFiles(); toast(`Uploaded ${added} file${added === 1 ? '' : 's'}.`, 'success'); }
+  if (added && E === X) { renderFiles(); openFile(firstPath); toast(`Uploaded ${added} file${added === 1 ? '' : 's'}.`, 'success'); }
 }
 
 /* ---------- running + preview ---------- */
@@ -891,10 +905,7 @@ document.addEventListener('click', async (e) => {
     case 'new-file': newFileModal(); break;
     case 'rename-file': renameFileModal(t.dataset.path); break;
     case 'delete-file': deleteFile(t.dataset.path); break;
-    case 'upload': {
-      const inp = document.createElement('input'); inp.type = 'file'; inp.multiple = true; inp.accept = [...CS_EXTS].map((x) => '.' + x).join(',');
-      inp.addEventListener('change', () => uploadFiles([...inp.files])); inp.click(); break;
-    }
+    case 'upload': $('#cs-upload')?.click(); break;
     case 'toggle-files': $('#cs-left').classList.toggle(window.innerWidth <= 860 ? 'files-open' : 'files-closed'); break;
     case 'pane': setPane(t.dataset.pane); break;
     case 'pv-back': historyGo(-1); break;
