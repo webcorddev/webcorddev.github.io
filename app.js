@@ -38,6 +38,7 @@ const ICONS = {
   sidebar: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/>',
   chevleft: '<path d="M15 18l-6-6 6-6"/>',
   chevright: '<path d="M9 18l6-6-6-6"/>',
+  terminal: '<path d="M4 17l6-6-6-6M12 19h8"/>',
 };
 const icon = (name, size) => `<svg class="ico" ${size ? `style="width:${size}px;height:${size}px"` : ''} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ''}</svg>`;
 
@@ -115,14 +116,15 @@ function getShiki() {
 }
 const hlLang = (l) => { l = String(l || '').toLowerCase().trim(); return LANG_ALIAS[l] || l; };
 const wantsHl = (code, lang) => { const l = hlLang(lang); return !!l && l !== 'text' && code.length <= 60000; };
-async function shikiPre(code, lang, cache = true) {
+async function shikiPre(code, lang) {
   const l = hlLang(lang), key = l + '\0' + code;
-  if (cache && hlCache.has(key)) return hlCache.get(key);
+  if (hlCache.has(key)) return hlCache.get(key);
   const { hl, known } = await getShiki();
   if (!(l in known)) return null;
   await hl.loadLanguage(l);
   const html = hl.codeToHtml(code, { lang: l, theme: SHIKI_THEME });
-  if (cache) { if (hlCache.size > 300) hlCache.delete(hlCache.keys().next().value); hlCache.set(key, html); }
+  if (hlCache.size > 300) hlCache.delete(hlCache.keys().next().value);
+  hlCache.set(key, html);
   return html;
 }
 /** Upgrade every not-yet-highlighted code block on the page. */
@@ -197,7 +199,7 @@ function renderMessage(body) {
    API client
    ====================================================================== */
 class ApiError extends Error {
-  constructor(status, message, fields) { super(message); this.status = status; this.fields = fields || {}; }
+  constructor(status, message, fields, data) { super(message); this.status = status; this.fields = fields || {}; this.data = data || null; }
 }
 const TOKEN_KEY = 'webcord.token';
 const getToken = () => { try { return localStorage.getItem(TOKEN_KEY) || ''; } catch { return ''; } };
@@ -214,7 +216,7 @@ async function api(path, opts = {}) {
   if (text) { try { data = JSON.parse(text); } catch { /* non-JSON */ } }
   if (!res.ok) {
     if (res.status === 401 && S.user && !opts.quiet) sessionExpired();
-    throw new ApiError(res.status, data?.error || `Request failed (${res.status}).`, data?.fields);
+    throw new ApiError(res.status, data?.error || `Request failed (${res.status}).`, data?.fields, data);
   }
   return data;
 }
@@ -343,7 +345,7 @@ const V = {
 /* ======================================================================
    Router
    ====================================================================== */
-const APP_SECTIONS = ['chat', 'web', 'code', 'profile', 'settings', 'u'];
+const APP_SECTIONS = ['chat', 'web', 'codespace', 'profile', 'settings', 'u'];
 function parseHash() {
   return location.hash.replace(/^#\/?/, '').split('/').filter(Boolean).map((p) => { try { return decodeURIComponent(p); } catch { return p; } });
 }
@@ -352,8 +354,8 @@ function go(hash) { if (location.hash === hash) route(); else location.hash = ha
 async function route() {
   if (!S.booted) return;
   const [sec, arg] = parseHash();
+  if (typeof csLeave === 'function') csLeave();          // closes an open codespace editor (flushes unsaved edits)
   closeDrawers();
-  if (typeof csLeave === 'function' && (sec !== 'code' || !S.user)) csLeave(); // leaving a codespace: save and stop its timers
   if (!S.user) {
     if (sec === 'signup') return renderAuth('signup');
     if (sec === 'login' || sec === 'auth' || APP_SECTIONS.includes(sec)) return renderAuth('login');
@@ -364,11 +366,11 @@ async function route() {
     return route();
   }
   ensureShell();
-  setActiveNav(sec === 'u' || sec === 'code' ? 'web' : sec);
+  setActiveNav(sec === 'u' || sec === 'codespace' ? 'web' : sec);
   const token = ++S.token;
   if (sec === 'chat') return renderChat(arg, token);
-  if (sec === 'code') return renderCodespace(arg, token);
-  if (sec === 'web') { S.webTab = arg === 'code' ? 'code' : 'sites'; return renderWeb(); }
+  if (sec === 'web') return arg === 'codespaces' ? renderCodespaceList() : renderWeb();
+  if (sec === 'codespace') return renderCodespace(arg, token);
   if (sec === 'profile') return renderProfile(S.user.username, true, token);
   if (sec === 'u') return renderProfile(arg, arg && arg.toLowerCase() === S.user.username.toLowerCase(), token);
   if (sec === 'settings') return renderSettings();
@@ -388,9 +390,7 @@ async function afterAuth(user, token) {
   S.user = user;
   try { localStorage.setItem('webcord.lastLogin', user.username); } catch { /* storage unavailable */ }
   startSync();
-  const next = S.next && /^#\/(code|chat|web|u)\//.test(S.next) ? S.next : '#/chat';
-  S.next = null;
-  history.replaceState(null, '', next);
+  history.replaceState(null, '', '#/chat');
   route();
 }
 function resetSessionState() {
@@ -468,7 +468,7 @@ function renderWelcome() {
           ['code', 'Code sharing', 'Fenced code blocks with syntax highlighting, language labels and a one-click Copy button.', '#ec4899,#f97316'],
           ['paperclip', 'File sharing', 'Drop images and files straight into a conversation. Access is limited to room members.', '#0ea5e9,#6366f1'],
           ['globe', 'Website discovery', 'Submit what you built, browse projects from other devs and jump to their profiles.', '#10b981,#06b6d4'],
-          ['terminal', 'Codespaces', 'Write and run HTML, JS and Python in your browser. Keep it private, share it, or let anyone edit.', '#6d5dfc,#06b6d4'],
+          ['terminal', 'Codespaces', 'Write HTML, CSS, JS and Python in the browser, run it live, and share it privately or with the world.', '#f59e0b,#ef4444'],
         ].map(([ic, t, d, g]) => `<article class="feat reveal"><div class="fi" style="background:linear-gradient(135deg,${g.split(',')[0]},${g.split(',')[1]})">${icon(ic, 22)}</div><h3>${t}</h3><p>${d}</p></article>`).join('')}
       </div>
     </section>
@@ -491,10 +491,12 @@ function renderWelcome() {
 
     <section class="section" id="showcase">
       <h2 class="reveal">Discover sites built by <span class="br">devs</span></h2>
-      <p class="sub reveal">Real projects and live codespaces, straight from the community.</p>
-      <div class="seg sc-seg" role="tablist" aria-label="Showcase"><button type="button" role="tab" data-action="showcase-tab" data-tab="sites" aria-selected="true">${icon('globe', 16)} Websites</button><button type="button" role="tab" data-action="showcase-tab" data-tab="code" aria-selected="false">${icon('terminal', 16)} Codespaces</button></div>
-      <div class="gallery" id="sc-grid" aria-live="polite">${[0, 1, 2].map(() => '<div class="card sk-card" aria-hidden="true"><div class="sk sk-thumb"></div><div class="sk sk-line"></div><div class="sk sk-line short"></div></div>').join('')}</div>
-      <p class="sc-count" id="sc-count"></p>
+      <p class="sub reveal">The Web tab is a living gallery of projects from the community.</p>
+      <span class="sample-note">Preview — sample cards, not real projects</span>
+      <div class="gallery">
+        ${[['Portfolio site', 'A fast, minimal developer portfolio.', '#6d5dfc,#c084fc'], ['Docs starter', 'Documentation theme with search.', '#0ea5e9,#6366f1'], ['Tiny dashboard', 'Self-hosted metrics in one page.', '#f97316,#ec4899']].map(([t, d, g]) => `
+        <article class="card proj reveal" aria-hidden="true"><div class="thumb"><div class="thumb-fb" style="background:linear-gradient(135deg,${g.split(',')[0]},${g.split(',')[1]})">${t[0]}<small>https://example.dev</small></div></div><div class="proj-body"><h3>${t}</h3><p>${d}</p><div class="proj-foot"><span class="creator">${avatar({ username: t, display_name: t }, 24)}<span>sample</span></span><span class="btn sm">${icon('external', 14)} Visit</span></div></div></article>`).join('')}
+      </div>
     </section>
 
     <div class="cta-band"><div class="cta-inner">
@@ -512,46 +514,6 @@ function renderWelcome() {
   window.scrollTo(0, 0);
   const io = 'IntersectionObserver' in window ? new IntersectionObserver((es) => es.forEach((e) => { if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); } }), { threshold: 0.12 }) : null;
   $$('.reveal').forEach((el) => (io ? io.observe(el) : el.classList.add('in')));
-  loadShowcase();
-}
-
-/* Landing-page showcase: real projects + public codespaces from GET /api/showcase (no login needed). */
-async function loadShowcase(force) {
-  if (!$('#sc-grid')) return;
-  if (!S.showcase || force) {
-    try { S.showcase = { data: await api('/showcase', { quiet: true }), tab: S.showcase?.tab || 'sites' }; }
-    catch (e) {
-      if ($('#sc-grid')) $('#sc-grid').innerHTML = `<div class="empty" style="grid-column:1/-1"><h3>Couldn’t load the showcase</h3><p>${esc(e.message)}</p><button class="btn primary" data-action="showcase-retry">Try again</button></div>`;
-      return;
-    }
-  }
-  renderShowcase();
-}
-function showcaseSite(p) {
-  const [a, b] = gradFor(p.title);
-  let host = p.url; try { host = new URL(p.url).host; } catch { /* keep raw */ }
-  return `<article class="card proj"><div class="thumb"><div class="thumb-fb" style="background:linear-gradient(135deg,${a},${b})">${esc(p.title.charAt(0).toUpperCase())}<small>${esc(host)}</small></div>${p.preview_url ? `<img src="${esc(p.preview_url)}" alt="Preview of ${esc(p.title)}" loading="lazy" referrerpolicy="no-referrer" data-fb>` : ''}</div>
-    <div class="proj-body"><h3>${esc(p.title)}</h3><p>${esc(p.description)}</p><div class="proj-foot"><span class="creator">${avatar(p.creator, 24)}<span>${esc(p.creator.display_name)}</span></span><a class="btn sm" href="${esc(p.url)}" target="_blank" rel="noopener noreferrer nofollow">${icon('external', 14)} Visit</a></div></div></article>`;
-}
-function showcaseCode(c) {
-  const exts = []; for (const p of c.paths || []) { const e = fileExt(p); if (!exts.includes(e)) exts.push(e); }
-  return `<a class="card cs-card" href="#/code/${esc(c.id)}" data-action="showcase-open" data-hash="#/code/${esc(c.id)}">
-    <div class="cs-card-top">${visBadge(c.visibility)}<small>${esc(ago(c.updated_at))}</small></div>
-    <h3>${esc(c.title)}</h3><p>${c.description ? esc(c.description) : '<span class="muted">No description</span>'}</p>
-    <div class="cs-card-chips">${exts.slice(0, 6).map((e) => csChip('x.' + e)).join('')}<small>${(c.paths || []).length} file${(c.paths || []).length === 1 ? '' : 's'}</small></div>
-    <div class="proj-foot"><span class="creator">${avatar(c.owner, 24)}<span>${esc(c.owner.display_name)}</span></span><span class="btn sm">${icon('code', 14)} Open</span></div></a>`;
-}
-function renderShowcase() {
-  const grid = $('#sc-grid'); if (!grid || !S.showcase) return;
-  const { data, tab } = S.showcase, code = tab === 'code';
-  $$('.sc-seg button').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.tab === tab)));
-  const items = code ? data.codespaces : data.projects;
-  grid.innerHTML = items.length
-    ? items.map(code ? showcaseCode : showcaseSite).join('')
-    : `<div class="empty" style="grid-column:1/-1"><div class="em-ico">${icon(code ? 'terminal' : 'globe', 24)}</div><h3>${code ? 'No public codespaces yet' : 'No projects yet'}</h3><p>${code ? 'Create a public codespace and it will show up here.' : 'Submit the first website and it will show up here.'}</p><a class="btn primary" href="#/signup">Create your account</a></div>`;
-  const total = code ? data.totals.codespaces : data.totals.projects;
-  $('#sc-count').innerHTML = total > items.length ? `Showing the ${items.length} latest of ${total}. <a href="#/signup">Join to see them all →</a>` : '';
-  $$('#sc-grid img[data-fb]').forEach((im) => im.addEventListener('error', () => im.remove(), { once: true }));
 }
 
 /* ======================================================================
@@ -719,7 +681,7 @@ function updateStatus() {
 }
 function setActiveNav(sec) {
   $$('.nav a').forEach((a) => (a.dataset.nav === sec ? a.setAttribute('aria-current', 'page') : a.removeAttribute('aria-current')));
-  const titles = { chat: 'Chat', web: S.webTab === 'code' ? 'Codespaces' : 'Web', code: 'Codespace', profile: 'Profile', settings: 'Settings' };
+  const titles = { chat: 'Chat', web: 'Web', profile: 'Profile', settings: 'Settings' };
   document.title = `${titles[sec] || 'Webcord'} — Webcord`;
 }
 function setMain(html, flush = false) {
@@ -1090,13 +1052,11 @@ function projectCard(p) {
 }
 
 function renderWeb() {
-  const code = S.webTab === 'code';
   setMain(`<div class="page">
-    <div class="page-head"><div><h1>Web</h1><p>${code ? 'Write, run and share code right in your browser — alone or together.' : 'Websites built by developers in the Webcord community.'}</p></div>${code ? `<button class="btn primary" data-action="new-codespace">${icon('plus', 17)} New codespace</button>` : `<button class="btn primary" data-action="new-project">${icon('plus', 17)} Submit project</button>`}</div>
-    <div class="seg" role="tablist" aria-label="Web sections"><a role="tab" href="#/web" aria-selected="${!code}">${icon('globe', 16)} Websites</a><a role="tab" href="#/web/code" aria-selected="${code}">${icon('code', 16)} Codespaces</a></div>
-    ${code ? '<div id="cs-list-root"></div>' : `<div class="toolbar"><div class="search">${icon('search')}<input class="input" id="proj-search" type="search" placeholder="Search projects by title or description" aria-label="Search projects" value="${esc(S.web.q)}"></div></div>
-    <div id="proj-results"></div>`}</div>`);
-  if (code) return csRenderList();
+    <div class="page-head"><div><h1>Web</h1><p>Websites and codespaces built by developers in the Webcord community.</p></div><button class="btn primary" data-action="new-project">${icon('plus', 17)} Submit project</button></div>
+    ${webTabs('sites')}
+    <div class="toolbar"><div class="search">${icon('search')}<input class="input" id="proj-search" type="search" placeholder="Search projects by title or description" aria-label="Search projects" value="${esc(S.web.q)}"></div></div>
+    <div id="proj-results"></div></div>`);
   $('#proj-search').addEventListener('input', debounce((e) => { S.web.q = e.target.value.trim(); loadProjects(true); }, 300));
   loadProjects(true);
 }
@@ -1366,16 +1326,13 @@ document.addEventListener('click', async (e) => {
     case 'retry-chat': S.roomsLoaded = false; route(); break;
     case 'retry-room': { const r = S.room; S.room = null; if (r) openRoom(r, S.token); break; }
     case 'new-project': projectModal(null); break;
-    case 'showcase-tab': if (S.showcase) { S.showcase.tab = t.dataset.tab; renderShowcase(); } break;
-    case 'showcase-retry': loadShowcase(true); break;
-    case 'showcase-open': e.preventDefault(); S.next = t.dataset.hash; go('#/login'); break;
     case 'edit-project': projectModal(S.proj.get(t.dataset.id)); break;
     case 'delete-project': deleteProject(t.dataset.id); break;
     case 'more-projects': busy(t, true); await loadProjects(false); break;
     case 'retry-projects': loadProjects(true); break;
     case 'edit-profile': editProfileModal(); break;
     case 'message-user': startDm(t.dataset.username); break;
-    default: if (typeof csAction === 'function') csAction(a, t, e); break;
+    default: break;
   }
 });
 // Gracefully handle missing / blocked preview images by removing the broken <img> (a placeholder sits underneath).
