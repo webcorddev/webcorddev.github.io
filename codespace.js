@@ -1,711 +1,908 @@
-/* Webcord codespaces — a multi-file code editor with a live, browser-like preview.
-   Loaded after app.js and shares its globals ($, api, icon, openModal, shikiPre, fileKind, …). */
+/* Webcord codespaces — the "Codespaces" tab of the Web section + the editor page (#/codespace/<id>).
+   Loaded after app.js and uses its helpers ($, esc, icon, api, openModal, toast, setMain, S, route, Shiki …).
+   Code runs in a sandboxed iframe (runner.html) — see the comment at the top of that file. */
 'use strict';
 
 Object.assign(ICONS, {
-  play: '<path d="M7 4.5v15l13-7.5z" fill="currentColor"/>',
-  stop: '<rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/>',
-  refresh: '<path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.5 9a9 9 0 0 1 14.8-3.4L23 10M1 14l4.7 4.4A9 9 0 0 0 20.5 15"/>',
-  folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
-  users: '<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8"/>',
+  play: '<polygon points="6 3 20 12 6 21 6 3"/>',
+  folder: '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>',
+  fileplus: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M12 18v-6M9 15h6"/>',
+  share: '<circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.59 13.51l6.83 3.98M15.41 6.51l-6.82 3.98"/>',
   lock: '<rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
+  users: '<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/>',
+  refresh: '<path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>',
   terminal: '<path d="M4 17l6-6-6-6M12 19h8"/>',
-  monitor: '<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/>',
-  phone: '<rect x="6" y="2" width="12" height="20" rx="2"/><path d="M11 18h2"/>',
-  window: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/>',
+  arrowleft: '<path d="M19 12H5M12 19l-7-7 7-7"/>',
+  arrowright: '<path d="M5 12h14M12 5l7 7-7 7"/>',
+  chevdown: '<path d="M6 9l6 6 6-6"/>',
+  fork: '<circle cx="12" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><path d="M18 9v1a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V9M12 12v3"/>',
+  panel: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/>',
 });
 
-const CS_VIS = {
-  private: { label: 'Private', icon: 'lock', desc: 'Only you can see and edit it.' },
-  shared: { label: 'Shared', icon: 'users', desc: 'You and the people you add. It appears in their Web section.' },
-  public: { label: 'Public', icon: 'globe', desc: 'Listed in the Web section for everyone. Anyone logged in can edit.' },
+const CS = { scope: 'all', q: '', items: [], offset: 0, hasMore: false, seq: 0, cache: new Map() };
+let E = null;                                           // the open editor session (null when no editor is on screen)
+
+const VIS = {
+  private: { label: 'Private', icon: 'lock', hint: 'Only you can see and edit it.' },
+  shared: { label: 'Shared', icon: 'users', hint: 'You and the people you add. It shows up in their Web tab.' },
+  public: { label: 'Public', icon: 'globe', hint: 'Everyone on Webcord can see and edit it.' },
 };
-const visBadge = (v) => `<span class="vis vis-${v}">${icon(CS_VIS[v].icon, 13)}${CS_VIS[v].label}</span>`;
-const csChip = (name) => { const k = fileKind(name); return `<span class="chip tone-${k.tone}">${esc(k.badge)}</span>`; };
-const ago = (ts) => {
-  const s = Math.max(1, ((Date.now() - ts) / 1000) | 0); if (s < 60) return 'just now';
-  const m = (s / 60) | 0; if (m < 60) return `${m}m ago`;
-  const h = (m / 60) | 0; if (h < 24) return `${h}h ago`;
-  const d = (h / 24) | 0; return d < 30 ? `${d}d ago` : new Date(ts).toLocaleDateString();
-};
-const CS_MAX_FILES = 40, CS_MAX_CHARS = 200000;
-function csValidPath(p) {
-  return p.length <= 100 && /^[A-Za-z0-9_.\-]+(?:\/[A-Za-z0-9_.\-]+){0,3}$/.test(p) && !p.split('/').some((x) => x === '.' || x === '..');
+const visBadge = (v) => `<span class="vis vis-${esc(v)}">${icon((VIS[v] || VIS.private).icon, 12)}${(VIS[v] || VIS.private).label}</span>`;
+const lsGet = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
+const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch { /* storage unavailable */ } };
+function ago(ts) {
+  const s = Math.max(0, (Date.now() - ts) / 1000);
+  if (s < 60) return 'just now';
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  if (s < 86400 * 30) return `${Math.floor(s / 86400)}d ago`;
+  return new Date(ts).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
 }
-/* Same path rules as the runner, so the address bar and navigation behave like a real server. */
-function csResolve(base, ref) {
-  ref = String(ref).split('#')[0].split('?')[0].trim();
-  if (!ref || /^[a-z][a-z0-9+.-]*:/i.test(ref) || ref.slice(0, 2) === '//') return null;
-  const parts = ref[0] === '/' ? [] : base.split('/').slice(0, -1).filter(Boolean);
-  for (const seg of ref.split('/')) { if (!seg || seg === '.') continue; if (seg === '..') parts.pop(); else parts.push(seg); }
-  return parts.join('/');
+
+/* Same rules as the server (backend/worker.js → vCsPath). */
+const CS_EXTS = new Set([...TEXT_EXTS, 'svg', 'readme', 'license']);
+function csPathError(v) {
+  const s = String(v || '').trim().replace(/^\/+/, '');
+  if (!s || s.length > 100 || s.endsWith('/')) return 'Enter a file name (up to 100 characters).';
+  const parts = s.split('/');
+  if (parts.length > 5) return 'Folders can be nested up to 4 levels deep.';
+  for (const p of parts) if (!/^[A-Za-z0-9_.-]+$/.test(p) || p === '.' || p === '..') return 'Use letters, numbers, dots, dashes and underscores in names (no spaces).';
+  if (!CS_EXTS.has(fileExt(parts[parts.length - 1]))) return 'That file type isn’t supported. Use text or code files such as .html, .css, .js, .py, .json or .md.';
+  return '';
 }
+const csNorm = (v) => String(v || '').trim().replace(/^\/+/, '');
+const MAX_FILE_CHARS = 200000;
 
 /* ======================================================================
-   Web section → Codespaces list
+   Web → Codespaces tab
    ====================================================================== */
-const CSL = { scope: 'public', q: '', items: [], offset: 0, hasMore: false, seq: 0 };
-try { CSL.scope = localStorage.getItem('webcord.csScope') || 'public'; } catch { /* storage unavailable */ }
+function webTabs(active) {
+  return `<div class="web-tabs" role="tablist" aria-label="Web sections">
+    <a role="tab" href="#/web" aria-selected="${active === 'sites'}">${icon('globe', 16)} Websites</a>
+    <a role="tab" href="#/web/codespaces" aria-selected="${active === 'codespaces'}">${icon('code', 16)} Codespaces <i class="new-tag">New</i></a></div>`;
+}
 
-function csRenderList() {
-  const root = $('#cs-list-root'); if (!root) return;
-  const chips = [['public', 'Public'], ['shared', 'Shared with me'], ['mine', 'My codespaces']];
-  root.innerHTML = `<div class="toolbar cs-toolbar"><div class="chips" role="tablist" aria-label="Filter codespaces">${chips.map(([k, l]) => `<button type="button" role="tab" class="chip-btn" aria-selected="${CSL.scope === k}" data-action="cs-scope" data-scope="${k}">${l}</button>`).join('')}</div>
-    <div class="search">${icon('search')}<input class="input" id="cs-search" type="search" placeholder="Search codespaces" aria-label="Search codespaces" value="${esc(CSL.q)}"></div></div><div id="cs-results"></div>`;
-  $('#cs-search').addEventListener('input', debounce((e) => { CSL.q = e.target.value.trim(); csLoadList(true); }, 300));
-  csLoadList(true);
+function renderCodespaceList() {
+  setMain(`<div class="page">
+    <div class="page-head"><div><h1>Web</h1><p>Write and run code together — codespaces you own, share, or find from the community.</p></div>
+      <button class="btn primary" data-cs="new">${icon('plus', 17)} New codespace</button></div>
+    ${webTabs('codespaces')}
+    <div class="toolbar"><div class="search">${icon('search')}<input class="input" id="cs-search" type="search" placeholder="Search codespaces" aria-label="Search codespaces" value="${esc(CS.q)}"></div>
+      <div class="chips" role="group" aria-label="Filter codespaces">${[['all', 'All'], ['mine', 'Mine'], ['shared', 'Shared with me'], ['public', 'Public']]
+        .map(([k, l]) => `<button type="button" class="chip" data-cs="scope" data-scope="${k}" aria-pressed="${CS.scope === k}">${l}</button>`).join('')}</div></div>
+    <div id="cs-results"></div></div>`);
+  $('#cs-search').addEventListener('input', debounce((e) => { CS.q = e.target.value.trim(); loadCodespaces(true); }, 300));
+  loadCodespaces(true);
 }
-function csCard(c) {
-  const exts = []; for (const p of c.paths || []) { const e = fileExt(p); if (!exts.includes(e)) exts.push(e); }
-  return `<a class="card cs-card" href="#/code/${esc(c.id)}">
-    <div class="cs-card-top">${visBadge(c.visibility)}<small>${esc(ago(c.updated_at))}</small></div>
-    <h3>${esc(c.title)}</h3><p>${c.description ? esc(c.description) : '<span class="muted">No description</span>'}</p>
-    <div class="cs-card-chips">${exts.slice(0, 6).map((e) => csChip('x.' + e)).join('')}<small>${(c.paths || []).length} file${(c.paths || []).length === 1 ? '' : 's'}</small></div>
-    <div class="proj-foot"><span class="creator">${avatar(c.owner, 26)}<span>${esc(c.owner.display_name)}</span></span><span class="btn sm">${icon('code', 14)} Open</span></div></a>`;
+
+function csCard(cs) {
+  CS.cache.set(cs.id, cs);
+  const [a, b] = gradFor(cs.name);
+  const names = cs.file_names.slice(0, 4);
+  const mine = cs.role === 'owner';
+  const roleTag = mine ? '' : cs.visibility === 'public' ? '' : `<span class="role-tag">${cs.role === 'view' ? 'View only' : 'Can edit'}</span>`;
+  return `<article class="card cs-card" data-csid="${esc(cs.id)}">
+    <a class="cs-card-main" href="#/codespace/${encodeURIComponent(cs.id)}" aria-label="Open ${esc(cs.name)}">
+      <div class="cs-thumb" style="--a:${a};--b:${b}"><div class="cs-win"><div class="cs-win-bar"><i></i><i></i><i></i></div>
+        ${names.length ? names.map((n) => { const k = fileKind(n); return `<div class="cs-win-row"><span class="cs-ext tone-${k.tone}">${esc(k.badge)}</span><span>${esc(n)}</span></div>`; }).join('') : '<div class="cs-win-row"><span class="dim">No files yet</span></div>'}
+        ${cs.file_count > names.length ? `<div class="cs-win-row more">+ ${cs.file_count - names.length} more</div>` : ''}</div></div>
+      <div class="proj-body"><div class="cs-card-top"><h3>${esc(cs.name)}</h3>${visBadge(cs.visibility)}</div>
+        <p>${cs.description ? esc(cs.description) : '<span class="muted-p">No description</span>'}</p>
+        <div class="cs-meta"><span>${icon('file', 13)} ${cs.file_count} file${cs.file_count === 1 ? '' : 's'}</span>${cs.visibility === 'shared' && cs.member_count ? `<span>${icon('users', 13)} ${cs.member_count + 1}</span>` : ''}<span>Updated ${esc(ago(cs.updated_at))}</span>${roleTag}</div></div></a>
+    <div class="proj-foot"><a class="creator" href="#/u/${encodeURIComponent(cs.owner.username)}">${avatar(cs.owner, 26)}<span>${esc(cs.owner.display_name)}</span></a>
+      <span class="proj-actions">${mine ? `<button class="btn icon sm ghost" data-cs="delete-cs" data-id="${esc(cs.id)}" aria-label="Delete ${esc(cs.name)}">${icon('trash', 16)}</button>` : ''}<a class="btn sm" href="#/codespace/${encodeURIComponent(cs.id)}">${icon('code', 14)} Open</a></span></div></article>`;
 }
-async function csLoadList(reset) {
+
+async function loadCodespaces(reset) {
   const box = $('#cs-results'); if (!box) return;
-  if (reset) { CSL.offset = 0; CSL.items = []; box.innerHTML = '<div class="loading-row"><span class="spinner"></span>Loading codespaces…</div>'; }
-  const seq = ++CSL.seq;
+  if (reset) { CS.offset = 0; CS.items = []; box.innerHTML = '<div class="loading-row"><span class="spinner"></span>Loading codespaces…</div>'; }
+  const my = ++CS.seq;
   try {
-    const r = await api(`/codespaces?scope=${CSL.scope}&limit=24&offset=${CSL.offset}${CSL.q ? '&q=' + encodeURIComponent(CSL.q) : ''}`);
-    if (seq !== CSL.seq || !$('#cs-results')) return;
-    CSL.items = CSL.items.concat(r.codespaces); CSL.offset = CSL.items.length; CSL.hasMore = r.has_more;
-    if (!CSL.items.length) {
-      const msg = CSL.q ? ['No codespaces match your search', 'Try a different keyword.']
-        : CSL.scope === 'mine' ? ['You don’t have any codespaces yet', 'Create one to write and run code right in your browser.']
-          : CSL.scope === 'shared' ? ['Nothing has been shared with you yet', 'When someone adds you to a codespace it shows up here.']
-            : ['No public codespaces yet', 'Be the first to create one that anyone can edit.'];
-      box.innerHTML = `<div class="empty"><div class="em-ico">${icon('code', 24)}</div><h3>${msg[0]}</h3><p>${msg[1]}</p><button class="btn primary" data-action="new-codespace">${icon('plus', 16)} New codespace</button></div>`;
+    const r = await api(`/codespaces?limit=24&offset=${CS.offset}&scope=${CS.scope}${CS.q ? '&q=' + encodeURIComponent(CS.q) : ''}`);
+    if (my !== CS.seq || !$('#cs-results')) return;
+    CS.items = CS.items.concat(r.codespaces); CS.offset = CS.items.length; CS.hasMore = r.has_more;
+    if (!CS.items.length) {
+      const msg = CS.q ? ['No codespaces match your search', 'Try a different keyword.']
+        : CS.scope === 'shared' ? ['Nothing shared with you yet', 'When someone adds you to their codespace it will appear here.']
+        : CS.scope === 'public' ? ['No public codespaces yet', 'Make one public and anyone on Webcord can jump in and edit.']
+        : ['No codespaces yet', 'Create one to write HTML, CSS, JavaScript or Python and run it right here.'];
+      box.innerHTML = `<div class="empty"><div class="em-ico">${icon('code', 24)}</div><h3>${msg[0]}</h3><p>${msg[1]}</p>${CS.q ? '' : `<button class="btn primary" data-cs="new">${icon('plus', 16)} New codespace</button>`}</div>`;
       return;
     }
-    box.innerHTML = `<div class="grid">${CSL.items.map(csCard).join('')}</div>${CSL.hasMore ? '<div style="text-align:center;margin-top:22px"><button class="btn" data-action="cs-more">Load more</button></div>' : ''}`;
+    box.innerHTML = `<div class="grid">${CS.items.map(csCard).join('')}</div>${CS.hasMore ? '<div style="text-align:center;margin-top:22px"><button class="btn" data-cs="more">Load more</button></div>' : ''}`;
   } catch (e) {
-    if (seq !== CSL.seq) return;
-    box.innerHTML = `<div class="empty"><h3>Couldn’t load codespaces</h3><p>${esc(e.message)}</p><button class="btn primary" data-action="cs-retry">Try again</button></div>`;
+    if (my !== CS.seq) return;
+    box.innerHTML = `<div class="empty"><h3>Couldn’t load codespaces</h3><p>${esc(e.message)}</p><button class="btn primary" data-cs="retry-list">Try again</button></div>`;
   }
 }
 
 function newCodespaceModal() {
-  const tpl = [['web', 'Website', 'HTML + CSS + JS'], ['javascript', 'JavaScript', 'Modules + console'], ['python', 'Python', 'Runs in your browser'], ['blank', 'Blank', 'Just an index.html']];
+  const tpls = [['web', 'Website', 'HTML + CSS + JS, with two linked pages', 'html'], ['python', 'Python', 'main.py + a module it imports', 'py'], ['javascript', 'JavaScript', 'ES modules with console output', 'js'], ['blank', 'Blank', 'Start from an empty README', 'md']];
+  const opt = (name, val, title, hint, checked, ic) => `<label class="opt"><input type="radio" name="${name}" value="${val}" ${checked ? 'checked' : ''}><span class="opt-in">${ic}<b>${title}</b><small>${hint}</small></span></label>`;
   openModal({
-    title: 'New codespace',
-    html: `<form id="cs-new" novalidate>
-      ${fieldHtml({ id: 'cs-n-title', label: 'Name', placeholder: 'My cool project', maxlength: 60 })}
-      ${fieldHtml({ id: 'cs-n-desc', label: 'Description (optional)', placeholder: 'What is it about?', maxlength: 200, required: false })}
-      <div class="field"><label>Start from</label><div class="opt-grid">${tpl.map(([k, t, d], i) => `<label class="opt"><input type="radio" name="tpl" value="${k}" ${i === 0 ? 'checked' : ''}><span><b>${t}</b><small>${d}</small></span></label>`).join('')}</div></div>
-      <div class="field"><label>Who can see it?</label><div class="opt-list">${Object.entries(CS_VIS).map(([k, v], i) => `<label class="opt"><input type="radio" name="vis" value="${k}" ${i === 0 ? 'checked' : ''}><span class="opt-ico">${icon(v.icon, 18)}</span><span><b>${v.label}</b><small>${v.desc}</small></span></label>`).join('')}</div></div>
-      <p class="err" id="cs-n-error" role="alert"></p>
-      <div class="modal-actions"><button class="btn" type="button" data-close>Cancel</button><button class="btn primary" type="submit">Create codespace</button></div></form>`,
+    title: 'New codespace', wide: true,
+    html: `<form id="cs-form" novalidate><div class="form-error" id="csf-error" role="alert"></div>
+      ${fieldHtml({ id: 'csf-name', label: 'Name', placeholder: 'my-landing-page', maxlength: 60 })}
+      ${fieldHtml({ id: 'csf-desc', label: 'Description (optional)', textarea: true, rows: 2, required: false, maxlength: 300, placeholder: 'What are you building?' })}
+      <div class="field"><label>Start from</label><div class="opts">${tpls.map(([v, t, h, e], i) => { const k = fileKind('x.' + e); return opt('csf-tpl', v, t, h, i === 0, `<span class="cs-ext tone-${k.tone}">${esc(k.badge)}</span>`); }).join('')}</div></div>
+      <div class="field"><label>Who can access it?</label><div class="opts three">${Object.entries(VIS).map(([v, m], i) => opt('csf-vis', v, m.label, m.hint, i === 0, icon(m.icon, 18))).join('')}</div></div>
+      <div class="modal-actions"><button type="button" class="btn" data-close>Cancel</button><button class="btn primary" type="submit">Create codespace</button></div></form>`,
     onOpen: (d, close) => {
-      const form = $('#cs-new', d); $('#cs-n-title', d).focus();
-      form.addEventListener('submit', async (e) => {
-        e.preventDefault(); clearErrs(form); $('#cs-n-error', d).textContent = '';
-        const title = $('#cs-n-title', d).value.trim();
-        if (!title) return setErr('cs-n-title', 'Give your codespace a name.');
-        const btn = $('button[type=submit]', form); busy(btn, true, 'Creating…');
+      $('#csf-name', d).focus();
+      $('#cs-form', d).addEventListener('submit', async (ev) => {
+        ev.preventDefault();
+        const form = ev.currentTarget, btn = $('button[type=submit]', form);
+        clearErrs(form); $('#csf-error', d).textContent = '';
+        const body = { name: $('#csf-name', d).value.trim(), description: $('#csf-desc', d).value.trim(), template: form.elements['csf-tpl'].value, visibility: form.elements['csf-vis'].value };
+        if (body.name.length < 2 || body.name.length > 60) return setErr('csf-name', 'Name must be 2–60 characters.');
+        busy(btn, true, 'Creating…');
         try {
-          const r = await api('/codespaces', { method: 'POST', body: { title, description: $('#cs-n-desc', d).value.trim(), template: form.tpl.value, visibility: form.vis.value } });
-          close(); go('#/code/' + r.id);
-        } catch (err) { busy(btn, false); if (!applyServerErrors({ title: 'cs-n-title', description: 'cs-n-desc' }, err)) $('#cs-n-error', d).textContent = err.message; }
+          const r = await api('/codespaces', { method: 'POST', body });
+          close(); toast('Codespace created.', 'success');
+          go('#/codespace/' + encodeURIComponent(r.codespace.id));
+        } catch (err) {
+          busy(btn, false);
+          if (!applyServerErrors({ name: 'csf-name', description: 'csf-desc' }, err)) $('#csf-error', d).textContent = err.message;
+        }
       });
     },
   });
+}
+
+async function deleteCodespace(id) {
+  const cs = CS.cache.get(id) || (E && E.meta);
+  if (!(await confirmDialog(`Delete “${cs?.name || 'this codespace'}” and all of its files? This can’t be undone.`))) return false;
+  try {
+    await api(`/codespaces/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    toast('Codespace deleted.', 'success'); CS.cache.delete(id);
+    return true;
+  } catch (e) { toast(e.message, 'error'); return false; }
 }
 
 /* ======================================================================
    Editor page
    ====================================================================== */
-const CS = {};
-function csReset() {
-  return Object.assign(CS, {
-    id: null, meta: null, files: new Map(), open: [], active: null, since: 0, dirty: new Set(), removed: new Set(),
-    saveT: null, saving: false, pollT: null, polling: false, hlT: null, hlTok: 0, status: 'saved',
-    webFrame: null, pyFrame: null, pyReady: false, pyQueue: null, webPayload: null, hist: [], hi: -1, scriptEntry: null,
-    logs: [], errs: 0, view: 'preview', device: 'desktop', loadT: null,
-  });
-}
-csReset();
-
-const csSnapshot = () => { const o = {}; CS.files.forEach((f, p) => { o[p] = f.content; }); return o; };
-const csPathSort = (a, b) => {
-  const da = a.includes('/') ? a.slice(0, a.lastIndexOf('/')) : '', db = b.includes('/') ? b.slice(0, b.lastIndexOf('/')) : '';
-  return da === db ? a.localeCompare(b) : da.localeCompare(db);
-};
-const csBeforeUnload = (e) => { if (CS.dirty.size || CS.removed.size) { e.preventDefault(); e.returnValue = ''; } };
-
-function csLeave() {
-  if (!CS.id) return;
-  clearInterval(CS.pollT); clearTimeout(CS.saveT); clearTimeout(CS.hlT); clearTimeout(CS.loadT);
-  if (CS.dirty.size || CS.removed.size) saveNow(true); // fire and forget: the payload is built before this function returns
-  window.removeEventListener('beforeunload', csBeforeUnload);
-  csReset();
-}
+const SANDBOX = 'allow-scripts allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-downloads allow-pointer-lock';
+const RUNNER_URL = 'runner.html';
+const kindOf = (p) => { const x = fileExt(p); return x === 'html' || x === 'htm' ? 'html' : x === 'py' ? 'py' : x === 'js' || x === 'mjs' ? 'js' : x === 'md' || x === 'markdown' ? 'md' : x === 'svg' ? 'svg' : 'text'; };
+const canEdit = () => !!E && E.role !== 'view';
 
 async function renderCodespace(id, token) {
-  if (!id) return go('#/web/code');
-  if (CS.id === id && $('#cs')) return;
   csLeave();
-  setMain('<div class="loading-row"><span class="spinner"></span>Opening codespace…</div>', true);
+  document.title = 'Codespace — Webcord';
+  setMain('<div class="page"><div class="loading-row"><span class="spinner"></span>Opening codespace…</div></div>', true);
   let r;
   try { r = await api('/codespaces/' + encodeURIComponent(id)); } catch (e) {
     if (token !== S.token) return;
-    setMain(`<div class="page"><div class="empty"><h3>${e.status === 404 ? 'Codespace not found' : 'Couldn’t open this codespace'}</h3><p>${e.status === 404 ? 'It may have been deleted, or it isn’t shared with you.' : esc(e.message)}</p><a class="btn primary" href="#/web/code">Back to codespaces</a></div></div>`);
+    setMain(`<div class="page"><div class="empty"><div class="em-ico">${icon('lock', 24)}</div><h3>${e.status === 404 ? 'Codespace not found' : 'Couldn’t open this codespace'}</h3><p>${esc(e.message)}</p><a class="btn primary" href="#/web/codespaces">Back to codespaces</a></div></div>`);
     return;
   }
   if (token !== S.token) return;
-  csReset();
-  CS.id = r.codespace.id; CS.meta = r.codespace; CS.since = r.now;
-  for (const f of r.files) CS.files.set(f.path, { content: f.content });
-  const paths = [...CS.files.keys()].sort(csPathSort);
-  CS.active = paths.includes('index.html') ? 'index.html' : paths.find((p) => /\.html?$/.test(p)) || paths[0] || null;
-  CS.open = CS.active ? [CS.active] : [];
-  csMount();
-  window.addEventListener('beforeunload', csBeforeUnload);
-  CS.pollT = setInterval(csPoll, 4000);
+  startEditor(r);
 }
 
-function csMount() {
-  const m = CS.meta;
-  setMain(`<div class="cs" id="cs" data-pane="code">
-    <header class="cs-head">
-      <a class="btn icon ghost" href="#/web/code" aria-label="Back to codespaces" title="Back to codespaces">${icon('chevleft', 20)}</a>
-      <div class="cs-titlebox"><button type="button" class="cs-title" id="cs-title" data-action="cs-details" title="${m.is_owner ? 'Rename or delete' : 'Details'}">${esc(m.title)}</button><span id="cs-vis">${visBadge(m.visibility)}</span></div>
-      <span class="cs-status" id="cs-status" data-s="saved"><i></i><span>Saved</span></span>
-      <span class="spacer"></span>
-      <span class="cs-people" id="cs-people"></span>
-      <button type="button" class="btn sm" id="cs-share" data-action="cs-share">${icon('users', 15)} <span>${m.is_owner ? 'Share' : 'People'}</span></button>
-      <button type="button" class="btn primary sm" id="cs-run" data-action="cs-run" title="Run (Ctrl+Enter)">${icon('play', 13)} Run</button>
+function startEditor(r) {
+  const files = new Map(r.files.map((f) => [f.path, { content: f.content, saved: f.content, rev: f.rev, dirty: false, saving: false, conflict: null, by: f.by, error: '' }]));
+  const X = E = {
+    id: r.codespace.id, meta: r.codespace, role: r.role, members: r.members || [], files, rev: r.codespace.rev,
+    open: [], active: null, collapsed: new Set(), scroll: new Map(), timers: new Map(),
+    pollTimer: null, dead: false, offline: false, shiki: null, hlSeq: 0, hlTimer: 0, autoTimer: 0,
+    runSeq: 0, hist: [], hi: -1, frame: null, payload: null, sent: false, entry: null, logs: [], errors: 0, consoleOpen: false,
+    auto: lsGet('webcord.cs.auto') === '1', pane: 'code',
+  };
+  document.title = `${X.meta.name} — Webcord`;
+  const left = parseFloat(lsGet('webcord.cs.split')) || 50;
+  const m = setMain(`<div class="cs-app" id="cs">
+    <header class="cs-bar">
+      <a class="btn icon ghost" href="#/web/codespaces" aria-label="Back to codespaces" title="Back to codespaces">${icon('chevleft', 20)}</a>
+      <div class="cs-title"><div class="cs-name"><b id="cs-name" title="${esc(X.meta.name)}">${esc(X.meta.name)}</b>${X.role === 'owner' ? `<button class="btn icon sm ghost" data-cs="rename-cs" aria-label="Rename codespace" title="Rename">${icon('edit', 14)}</button>` : ''}<span id="cs-vis">${visBadge(X.meta.visibility)}</span></div>
+        <small id="cs-save" class="cs-save"></small></div>
+      <div class="cs-bar-actions">
+        <label class="cs-auto" title="Re-run the preview automatically while you type"><input type="checkbox" id="cs-auto" ${X.auto ? 'checked' : ''}><span>Auto-run</span></label>
+        ${X.role === 'owner' ? '' : `<button class="btn sm" data-cs="fork" title="Make your own copy">${icon('fork', 15)}<span class="hide-sm"> Duplicate</span></button>`}
+        <button class="btn sm" data-cs="share">${icon('share', 15)}<span class="hide-sm"> ${X.role === 'owner' ? 'Share' : 'Details'}</span></button>
+        <button class="btn primary sm" data-cs="run" title="Runs the open file. For CSS or JS inside a website it runs the page. (Ctrl/⌘ + Enter)">${icon('play', 15)} Run</button>
+      </div>
     </header>
-    <div class="seg cs-seg" role="tablist"><button type="button" role="tab" data-action="cs-seg" data-pane="code" aria-selected="true">${icon('code', 15)} Code</button><button type="button" role="tab" data-action="cs-seg" data-pane="preview" aria-selected="false">${icon('window', 15)} Preview</button></div>
-    <div class="cs-body" id="cs-body">
-      <section class="cs-left">
-        <aside class="cs-files" id="cs-files" aria-label="Files"></aside>
-        <div class="cs-main"><div class="cs-tabs" id="cs-tabs"></div><div class="cs-editor" id="cs-editor"></div></div>
-      </section>
-      <div class="cs-resizer" id="cs-resizer" role="separator" aria-orientation="vertical" aria-label="Resize panels"></div>
-      <section class="cs-right">
-        <div class="cs-rhead">
-          <div class="cs-rtabs" role="tablist"><button type="button" role="tab" data-action="cs-view" data-view="preview" aria-selected="true">${icon('window', 15)} Preview</button><button type="button" role="tab" data-action="cs-view" data-view="console" aria-selected="false">${icon('terminal', 15)} Console <span class="cs-badge" id="cs-badge" hidden></span></button></div>
-          <span class="spacer"></span><button type="button" class="btn sm ghost" id="cs-stop" data-action="cs-stop" hidden>${icon('stop', 12)} Stop</button>
-        </div>
-        <div class="cs-pane" id="cs-pane-preview"><div class="cs-browser">
-          <div class="cs-tabstrip"><span class="cs-faketab"><i></i><span id="cs-ptitle">New tab</span></span></div>
-          <div class="cs-bar">
-            <button type="button" class="btn icon sm ghost" id="cs-nb" data-action="cs-back" aria-label="Back" disabled>${icon('chevleft', 17)}</button>
-            <button type="button" class="btn icon sm ghost" id="cs-nf" data-action="cs-forward" aria-label="Forward" disabled>${icon('chevright', 17)}</button>
-            <button type="button" class="btn icon sm ghost" data-action="cs-reload" aria-label="Reload" title="Reload">${icon('refresh', 15)}</button>
-            <div class="cs-url" id="cs-url" title="Preview address">${icon('lock', 13)}<span class="h">codespace.local</span><span id="cs-url-path">/</span></div>
-            <button type="button" class="btn icon sm ghost" data-action="cs-device" data-device="desktop" aria-label="Desktop size" aria-pressed="true">${icon('monitor', 16)}</button>
-            <button type="button" class="btn icon sm ghost" data-action="cs-device" data-device="mobile" aria-label="Phone size" aria-pressed="false">${icon('phone', 16)}</button>
+    <div class="cs-panes" role="tablist" aria-label="Editor panes"><button role="tab" data-cs="pane" data-pane="code" aria-selected="true">${icon('code', 15)} Code</button><button role="tab" data-cs="pane" data-pane="preview" aria-selected="false">${icon('eye', 15)} Preview</button></div>
+    <div class="cs-body" id="cs-body" data-pane="code" style="--left:${Math.min(75, Math.max(25, left))}%">
+      <section class="cs-left" id="cs-left">
+        <aside class="cs-files" id="cs-files" aria-label="Files"><div class="cs-files-head"><span>Files</span><span class="cs-files-acts">${canEdit() ? `<button class="btn icon sm ghost" data-cs="new-file" aria-label="New file" title="New file">${icon('fileplus', 16)}</button><button class="btn icon sm ghost" data-cs="upload" aria-label="Upload files" title="Upload files">${icon('upload', 16)}</button>` : ''}</span></div><div class="cs-tree" id="cs-tree" role="tree"></div></aside>
+        <div class="cs-editor">
+          <div class="cs-tabs-row"><button class="btn icon sm ghost cs-files-toggle" data-cs="toggle-files" aria-label="Toggle file list" title="Toggle file list">${icon('panel', 16)}</button><div class="cs-tabs" id="cs-tabs" role="tablist"></div></div>
+          <div class="cs-conflict" id="cs-conflict" hidden></div>
+          <div class="ed" id="ed" hidden>
+            <div class="ed-ln" aria-hidden="true"><div id="ed-ln-in"></div></div>
+            <div class="ed-main"><pre class="ed-hl" aria-hidden="true"><code id="ed-code"></code></pre><textarea class="ed-ta" id="ed-ta" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off" wrap="off" aria-label="Code editor"></textarea></div>
           </div>
-          <div class="cs-loadbar" id="cs-loadbar"></div>
-          <div class="cs-frame-host" id="cs-frame-host" data-device="desktop"><div class="cs-empty" id="cs-pempty"><div class="em-ico">${icon('play', 22)}</div><h3>Nothing running yet</h3><p>Press <b>Run</b> to preview your page or run your code.</p></div></div>
-        </div></div>
-        <div class="cs-pane" id="cs-pane-console" hidden>
-          <div class="cs-console-head"><span>Console</span><button type="button" class="btn sm ghost" data-action="cs-clear">Clear</button></div>
-          <div class="cs-log" id="cs-log" role="log" aria-live="polite"></div>
-          <form class="cs-repl" id="cs-repl" autocomplete="off"><span>›</span><input id="cs-repl-in" placeholder="Run JavaScript in the page…" spellcheck="false" autocapitalize="off" aria-label="Console input"></form>
+          <div class="ed-empty" id="ed-empty"><div>${icon('file', 28)}<p>Select a file to start editing.</p></div></div>
         </div>
+      </section>
+      <div class="cs-gutter" id="cs-gutter" role="separator" aria-orientation="vertical" aria-label="Resize panes" tabindex="0"></div>
+      <section class="cs-right" aria-label="Preview">
+        <div class="pv-bar">
+          <button class="btn icon sm ghost" data-cs="pv-back" id="pv-back" aria-label="Back" disabled>${icon('arrowleft', 16)}</button>
+          <button class="btn icon sm ghost" data-cs="pv-fwd" id="pv-fwd" aria-label="Forward" disabled>${icon('arrowright', 16)}</button>
+          <button class="btn icon sm ghost" data-cs="run" aria-label="Reload preview" title="Reload (re-run)">${icon('refresh', 16)}</button>
+          <input class="pv-url" id="pv-url" type="text" spellcheck="false" autocomplete="off" placeholder="index.html" aria-label="Preview address">
+          <button class="btn sm ghost pv-console-btn" data-cs="toggle-console" id="pv-console-btn" aria-pressed="false">${icon('terminal', 15)}<span class="hide-sm"> Console</span> <span class="count" id="pv-count" hidden></span></button>
+        </div>
+        <div class="pv-stage" id="pv-stage"><div class="pv-empty"><div class="em-ico">${icon('play', 22)}</div><h3>Preview</h3><p>Press <b>Run</b> to see your website or code output here.</p></div></div>
+        <div class="pv-console" id="pv-console" hidden><div class="pv-console-head"><b>Console</b><button class="btn sm ghost" data-cs="clear-console">Clear</button></div><div class="pv-logs" id="pv-logs" role="log" aria-live="polite"></div></div>
       </section>
     </div></div>`, true);
-  csMountEditor(); csRenderHead(); csRenderFiles(); csRenderTabs(); csLoadActive();
-  $('#cs-resizer').addEventListener('pointerdown', csStartResize);
-  $('#cs-repl').addEventListener('submit', csRepl);
-  $('#cs').addEventListener('keydown', (e) => {
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); saveNow(); }
-  });
-  CS.logs.forEach((l) => csAppendLog(l)); csUpdateBadge();
+  renderFiles(); renderTabs(); updateSaveStatus(); updateHistoryButtons();
+  const first = ['index.html', 'main.py', 'main.js', 'README.md'].find((p) => files.has(p)) || [...files.keys()].sort()[0];
+  if (first) openFile(first);
+  bindEditor(m);
+  pollLoop(X);
+  const pick = pickEntry();
+  if (pick && kindOf(pick) === 'html') runPreview(pick, { quiet: true });
 }
 
-function csRenderHead() {
-  const m = CS.meta; if (!m || !$('#cs')) return;
-  $('#cs-title').textContent = m.title; $('#cs-vis').innerHTML = visBadge(m.visibility);
-  document.title = `${m.title} — Webcord`;
-  const people = [m.owner, ...(m.members || [])].slice(0, 5);
-  $('#cs-people').innerHTML = people.map((u) => `<span class="cs-person" title="${esc(u.display_name)} (@${esc(u.username)})">${avatar(u, 26)}</span>`).join('') + ((m.members || []).length + 1 > 5 ? `<span class="cs-more">+${(m.members || []).length + 1 - 5}</span>` : '');
+function csLeave() {
+  const X = E; if (!X) return;
+  X.dead = true; E = null;
+  clearTimeout(X.pollTimer); clearTimeout(X.hlTimer); clearTimeout(X.autoTimer);
+  X.timers.forEach((t) => clearTimeout(t));
+  for (const p of X.files.keys()) saveFile(X, p);       // flush anything still unsaved (the request keeps going after we leave)
+  try { X.frame?.remove(); } catch { /* */ }
 }
-function csSetStatus(s) {
-  CS.status = s; const el = $('#cs-status'); if (!el) return;
-  el.dataset.s = s; $('span', el).textContent = { saved: 'Saved', saving: 'Saving…', dirty: 'Unsaved changes', error: 'Couldn’t save — retrying' }[s];
-}
+window.addEventListener('beforeunload', (e) => {
+  if (E && [...E.files.values()].some((f) => f.dirty || f.saving)) { e.preventDefault(); e.returnValue = ''; }
+});
 
-/* ---------- files + tabs ---------- */
-function csRenderFiles() {
-  const box = $('#cs-files'); if (!box) return;
-  const paths = [...CS.files.keys()].sort(csPathSort);
-  let html = `<div class="cs-files-head"><span>Files</span><span><button type="button" class="btn icon sm ghost" data-action="cs-import" aria-label="Import files from your device" title="Import files">${icon('upload', 15)}</button><button type="button" class="btn icon sm ghost" data-action="cs-new-file" aria-label="New file" title="New file">${icon('plus', 16)}</button></span></div><div class="cs-flist">`;
-  let lastDir = '';
-  for (const p of paths) {
-    const dir = p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '';
-    if (dir !== lastDir) {
-      const prev = lastDir.split('/').filter(Boolean), cur = dir.split('/').filter(Boolean); let i = 0;
-      while (i < prev.length && i < cur.length && prev[i] === cur[i]) i++;
-      for (let j = i; j < cur.length; j++) html += `<div class="cs-dir" style="--d:${j}">${icon('folder', 14)}<span>${esc(cur[j])}</span></div>`;
-      lastDir = dir;
-    }
-    const depth = dir ? dir.split('/').length : 0, name = p.slice(p.lastIndexOf('/') + 1);
-    html += `<div class="cs-f${p === CS.active ? ' active' : ''}" style="--d:${depth}"><button type="button" class="cs-f-main" data-action="cs-open" data-path="${esc(p)}" title="${esc(p)}">${csChip(name)}<span class="n">${esc(name)}</span>${CS.dirty.has(p) ? '<i class="dirty"></i>' : ''}</button><span class="cs-f-act"><button type="button" class="btn icon sm ghost" data-action="cs-rename" data-path="${esc(p)}" aria-label="Rename ${esc(p)}">${icon('edit', 13)}</button><button type="button" class="btn icon sm ghost" data-action="cs-delete" data-path="${esc(p)}" aria-label="Delete ${esc(p)}">${icon('trash', 13)}</button></span></div>`;
+/* ---------- file tree + tabs ---------- */
+function treeModel() {
+  const root = { dirs: new Map(), files: [] };
+  for (const p of [...E.files.keys()].sort((a, b) => a.localeCompare(b))) {
+    const parts = p.split('/'); let n = root;
+    for (let i = 0; i < parts.length - 1; i++) { if (!n.dirs.has(parts[i])) n.dirs.set(parts[i], { dirs: new Map(), files: [] }); n = n.dirs.get(parts[i]); }
+    n.files.push({ name: parts[parts.length - 1], path: p });
   }
-  if (!paths.length) html += '<p class="muted-p">No files yet. Add one with +.</p>';
-  box.innerHTML = html + '</div><input type="file" id="cs-import" class="sr-only" tabindex="-1" multiple>';
-  $('#cs-import', box).setAttribute('accept', FILE_ACCEPT.replace(IMAGE_ACCEPT + ',', ''));
-  $('#cs-import', box).addEventListener('change', csImport);
+  return root;
 }
-function csRenderTabs() {
-  const box = $('#cs-tabs'); if (!box) return;
-  box.innerHTML = `<button type="button" class="btn icon sm ghost cs-files-toggle" data-action="cs-files-toggle" aria-label="Show files">${icon('folder', 17)}</button>` +
-    CS.open.map((p) => `<div class="cs-tab${p === CS.active ? ' active' : ''}" role="tab" aria-selected="${p === CS.active}"><button type="button" class="cs-tab-main" data-action="cs-open" data-path="${esc(p)}" title="${esc(p)}">${csChip(p)}<span class="n">${esc(p.slice(p.lastIndexOf('/') + 1))}</span>${CS.dirty.has(p) ? '<i class="dirty"></i>' : ''}</button><button type="button" class="cs-tab-x" data-action="cs-close" data-path="${esc(p)}" aria-label="Close ${esc(p)}">${icon('x', 13)}</button></div>`).join('');
+function renderFiles() {
+  const box = $('#cs-tree'); if (!box || !E) return;
+  const edit = canEdit();
+  const walk = (n, depth, prefix) => {
+    let h = '';
+    for (const [name, sub] of [...n.dirs].sort((a, b) => a[0].localeCompare(b[0]))) {
+      const path = prefix + name, closed = E.collapsed.has(path);
+      h += `<div class="ft-row ft-dir" style="--d:${depth}" data-cs="toggle-folder" data-path="${esc(path)}" role="treeitem" aria-expanded="${!closed}" tabindex="0"><span class="ft-chev${closed ? ' closed' : ''}">${icon('chevdown', 13)}</span>${icon('folder', 15)}<span class="ft-name">${esc(name)}</span></div>`;
+      if (!closed) h += walk(sub, depth + 1, path + '/');
+    }
+    for (const f of n.files) {
+      const k = fileKind(f.name), st = E.files.get(f.path);
+      h += `<div class="ft-row${E.active === f.path ? ' active' : ''}" style="--d:${depth}" data-cs="open-file" data-path="${esc(f.path)}" role="treeitem" tabindex="0" title="${esc(f.path)}"><span class="cs-ext tone-${k.tone}">${esc(k.badge)}</span><span class="ft-name">${esc(f.name)}</span>${st.dirty || st.saving ? '<i class="dot" title="Unsaved"></i>' : ''}${st.conflict ? '<i class="dot warn" title="Changed by someone else"></i>' : ''}
+        ${edit ? `<span class="ft-act"><button class="btn icon sm ghost" data-cs="rename-file" data-path="${esc(f.path)}" aria-label="Rename ${esc(f.name)}">${icon('edit', 13)}</button><button class="btn icon sm ghost" data-cs="delete-file" data-path="${esc(f.path)}" aria-label="Delete ${esc(f.name)}">${icon('trash', 13)}</button></span>` : ''}</div>`;
+    }
+    return h;
+  };
+  box.innerHTML = E.files.size ? walk(treeModel(), 0, '') : '<p class="muted-p" style="padding:10px 12px">No files yet.</p>';
 }
-function csOpenFile(p) {
-  if (!CS.files.has(p)) return;
-  if (!CS.open.includes(p)) CS.open.push(p);
-  CS.active = p; $('#cs')?.classList.remove('files-open');
-  csRenderTabs(); csRenderFiles(); csLoadActive();
-  $('#cs-ed-ta')?.focus({ preventScroll: true });
+function renderTabs() {
+  const box = $('#cs-tabs'); if (!box || !E) return;
+  box.innerHTML = E.open.map((p) => {
+    const k = fileKind(p), st = E.files.get(p), name = p.split('/').pop();
+    return `<div class="cs-tab${E.active === p ? ' active' : ''}" role="tab" aria-selected="${E.active === p}" data-cs="open-file" data-path="${esc(p)}" title="${esc(p)}" tabindex="0"><span class="cs-ext tone-${k.tone}">${esc(k.badge)}</span><span class="t-name">${esc(name)}</span>${st && (st.dirty || st.saving) ? '<i class="dot"></i>' : ''}<button type="button" class="t-x" data-cs="close-tab" data-path="${esc(p)}" aria-label="Close ${esc(name)}">${icon('x', 12)}</button></div>`;
+  }).join('');
+  box.querySelector('.cs-tab.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
 }
-function csCloseTab(p) {
-  const i = CS.open.indexOf(p); if (i < 0) return;
-  CS.open.splice(i, 1);
-  if (CS.active === p) CS.active = CS.open[Math.min(i, CS.open.length - 1)] || null;
-  csRenderTabs(); csRenderFiles(); csLoadActive();
+function openFile(path) {
+  if (!E || !E.files.has(path)) return;
+  rememberScroll();
+  if (!E.open.includes(path)) E.open.push(path);
+  E.active = path;
+  loadActiveIntoEditor(); renderTabs(); renderFiles(); showConflict();
+  if (window.innerWidth <= 860) $('#cs-left')?.classList.remove('files-open');
 }
-function csFileModal({ title, label, value = '', okLabel, onSubmit }) {
+function closeTab(path) {
+  if (!E) return;
+  const i = E.open.indexOf(path); if (i < 0) return;
+  E.open.splice(i, 1);
+  if (E.active === path) { E.active = E.open[Math.min(i, E.open.length - 1)] || null; loadActiveIntoEditor(); }
+  renderTabs(); renderFiles(); showConflict();
+}
+
+/* ---------- the code editor (a transparent <textarea> on top of a syntax-highlighted <pre>) ---------- */
+const edEl = () => ({ ta: $('#ed-ta'), code: $('#ed-code'), ln: $('#ed-ln-in'), ed: $('#ed'), empty: $('#ed-empty') });
+function rememberScroll() { const { ta } = edEl(); if (E && E.active && ta) E.scroll.set(E.active, [ta.scrollTop, ta.scrollLeft, ta.selectionStart, ta.selectionEnd]); }
+function loadActiveIntoEditor() {
+  const { ta, ed, empty } = edEl(); if (!ta) return;
+  const f = E.active && E.files.get(E.active);
+  ed.hidden = !f; empty.hidden = !!f;
+  if (!f) return;
+  ta.value = f.content; ta.readOnly = !canEdit();
+  paintEditor(true);
+  const s = E.scroll.get(E.active) || [0, 0, 0, 0];
+  ta.scrollTop = s[0]; ta.scrollLeft = s[1]; syncScroll();
+  try { ta.setSelectionRange(s[2], s[3]); } catch { /* */ }
+  if (window.innerWidth > 860 && canEdit()) ta.focus({ preventScroll: true });
+}
+function syncScroll() {
+  const { ta, code, ln } = edEl(); if (!ta) return;
+  code.style.transform = `translate(${-ta.scrollLeft}px, ${-ta.scrollTop}px)`;
+  ln.style.transform = `translateY(${-ta.scrollTop}px)`;
+}
+function codeInner(html) { const t = document.createElement('template'); t.innerHTML = html; return t.content.querySelector('code')?.innerHTML ?? ''; }
+function paintEditor(forceAsync) {
+  const { ta, code, ln } = edEl(); if (!ta || !E || !E.active) return;
+  const text = ta.value, lang = hlLang(fileExt(E.active)), seq = ++E.hlSeq;
+  const lines = text.split('\n').length;
+  if (ln.dataset.n !== String(lines)) { ln.dataset.n = String(lines); ln.textContent = Array.from({ length: lines }, (_, i) => i + 1).join('\n'); }
+  if (!wantsHl(text, lang)) { code.textContent = text + '\n'; return; }
+  const sh = E.shiki;
+  if (sh && lang in sh.known && sh.hl.getLoadedLanguages().includes(lang) && text.length < 25000) {
+    try { code.innerHTML = codeInner(sh.hl.codeToHtml(text, { lang, theme: SHIKI_THEME })) + '\n'; return; } catch { /* fall back */ }
+  }
+  code.textContent = text + '\n';
+  clearTimeout(E.hlTimer);
+  const X = E;
+  const go2 = async () => {
+    try {
+      const s = await getShiki(); X.shiki = s;
+      if (!(lang in s.known)) return;
+      await s.hl.loadLanguage(lang);
+      if (X.dead || seq !== X.hlSeq) return;
+      const el = edEl().code; if (!el) return;
+      el.innerHTML = codeInner(s.hl.codeToHtml(edEl().ta.value, { lang, theme: SHIKI_THEME })) + '\n';
+    } catch { /* highlighting is optional */ }
+  };
+  if (forceAsync || text.length < 25000) go2(); else E.hlTimer = setTimeout(go2, 250);
+}
+function insertText(text) {
+  const { ta } = edEl();
+  ta.focus();
+  if (!document.execCommand || !document.execCommand('insertText', false, text)) {
+    const s = ta.selectionStart; ta.setRangeText(text, s, ta.selectionEnd, 'end'); ta.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+}
+const indentUnit = () => (E && fileExt(E.active) === 'py' ? '    ' : '  ');
+function indentSelection(back) {
+  const { ta } = edEl(); const v = ta.value, s = ta.selectionStart, e = ta.selectionEnd, unit = indentUnit();
+  if (s === e && !back) return insertText(unit);
+  const ls = v.lastIndexOf('\n', s - 1) + 1;
+  let le = v.indexOf('\n', e); if (le < 0) le = v.length;
+  if (e > s && v[e - 1] === '\n') le = e - 1;
+  const block = v.slice(ls, le).split('\n');
+  const out = block.map((l) => (back ? (l.startsWith(unit) ? l.slice(unit.length) : l.replace(/^ {1,3}|^\t/, '')) : (l.length ? unit + l : l)));
+  const text = out.join('\n');
+  ta.setSelectionRange(ls, le); insertText(text);
+  if (s === e) { const c = Math.max(ls, s + text.length - (le - ls)); ta.setSelectionRange(c, c); } else ta.setSelectionRange(ls, ls + text.length);
+}
+function autoIndent(ev) {
+  const { ta } = edEl(); if (ta.readOnly) return;
+  const v = ta.value, s = ta.selectionStart, e = ta.selectionEnd;
+  const ls = v.lastIndexOf('\n', s - 1) + 1, line = v.slice(ls, s), trimmed = line.trimEnd();
+  const indent = /^[ \t]*/.exec(line)[0], unit = indentUnit(), py = fileExt(E.active) === 'py';
+  const last = trimmed.slice(-1), pairs = { '{': '}', '[': ']', '(': ')' };
+  let ins = '\n' + indent, caret = null;
+  if (pairs[last] || (py && last === ':')) {
+    ins += unit;
+    if (pairs[last] && v[e] === pairs[last]) { caret = s + 1 + indent.length + unit.length; ins += '\n' + indent; }
+  }
+  ev.preventDefault(); insertText(ins);
+  if (caret != null) ta.setSelectionRange(caret, caret);
+}
+function onEdit() {
+  const { ta } = edEl(); const f = E && E.files.get(E.active); if (!f || ta.readOnly) return;
+  f.content = ta.value; f.dirty = f.content !== f.saved; f.error = '';
+  paintEditor(false); syncScroll();
+  scheduleSave(E, E.active);
+  updateSaveStatus(); markDirtyDots();
+  if (E.auto) { clearTimeout(E.autoTimer); E.autoTimer = setTimeout(() => runPreview(undefined, { auto: true }), 900); }
+}
+function markDirtyDots() { renderTabs(); renderFiles(); }
+
+function bindEditor(root) {
+  const { ta } = edEl();
+  ta.addEventListener('input', onEdit);
+  ta.addEventListener('scroll', syncScroll);
+  ta.addEventListener('keydown', (e) => {
+    const mod = e.ctrlKey || e.metaKey;
+    if (e.key === 'Tab' && !mod && !e.altKey) { e.preventDefault(); if (!ta.readOnly) indentSelection(e.shiftKey); return; }
+    if (e.key === 'Enter' && !mod && !e.shiftKey && !e.altKey && !e.isComposing) { autoIndent(e); return; }
+    if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); saveAll(); return; }
+    if (mod && e.key === 'Enter') { e.preventDefault(); runPreview(); }
+  });
+  $('#cs-auto').addEventListener('change', (e) => { E.auto = e.target.checked; lsSet('webcord.cs.auto', E.auto ? '1' : '0'); if (E.auto) runPreview(undefined, { auto: true }); });
+  $('#pv-url').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); navigateTo(e.target.value); } });
+  root.addEventListener('keydown', (e) => {
+    const row = e.target.closest?.('.ft-row, .cs-tab');
+    if (row && (e.key === 'Enter' || e.key === ' ') && e.target === row) { e.preventDefault(); row.click(); }
+  });
+  // draggable divider between code and preview
+  const g = $('#cs-gutter'), body = $('#cs-body');
+  g.addEventListener('pointerdown', (e) => {
+    e.preventDefault(); g.setPointerCapture(e.pointerId); body.classList.add('dragging');
+    const move = (ev) => { const r = body.getBoundingClientRect(); const pct = Math.min(75, Math.max(25, ((ev.clientX - r.left) / r.width) * 100)); body.style.setProperty('--left', pct + '%'); };
+    const up = () => { g.removeEventListener('pointermove', move); g.removeEventListener('pointerup', up); g.removeEventListener('pointercancel', up); body.classList.remove('dragging'); lsSet('webcord.cs.split', String(parseFloat(body.style.getPropertyValue('--left')))); };
+    g.addEventListener('pointermove', move); g.addEventListener('pointerup', up); g.addEventListener('pointercancel', up);
+  });
+  g.addEventListener('keydown', (e) => {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    const cur = parseFloat(body.style.getPropertyValue('--left')) || 50;
+    const next = Math.min(75, Math.max(25, cur + (e.key === 'ArrowLeft' ? -3 : 3)));
+    body.style.setProperty('--left', next + '%'); lsSet('webcord.cs.split', String(next));
+  });
+}
+
+/* ---------- saving ---------- */
+function scheduleSave(X, path, delay = 700) {
+  clearTimeout(X.timers.get(path));
+  X.timers.set(path, setTimeout(() => saveFile(X, path), delay));
+}
+function saveAll() { if (E) for (const p of E.files.keys()) saveFile(E, p); }
+async function saveFile(X, path) {
+  const f = X.files.get(path);
+  if (!f || !f.dirty || f.saving || f.conflict) return;
+  if (f.content.length > MAX_FILE_CHARS) { f.error = `Files can be at most ${MAX_FILE_CHARS.toLocaleString()} characters.`; if (E === X) updateSaveStatus(); return; }
+  clearTimeout(X.timers.get(path));
+  f.saving = true; const sent = f.content;
+  if (E === X) updateSaveStatus();
+  try {
+    const r = await api(`/codespaces/${encodeURIComponent(X.id)}/files`, { method: 'PUT', body: { path, content: sent, base_rev: f.rev }, quiet: true });
+    f.rev = r.file.rev; f.saved = sent; f.offline = false; X.offline = false; f.error = '';
+    f.dirty = f.content !== f.saved;
+    if (f.dirty) scheduleSave(X, path, 50);
+  } catch (e) {
+    if (e.status === 401) sessionExpired();
+    else if (e.status === 0) { X.offline = true; scheduleSave(X, path, 4000); }
+    else if (e.status === 409) conflictFrom(X, path, f, e.data && e.data.current);
+    else if (e.status === 404 || e.status === 403) { f.error = e.message; if (E === X) { toast(e.message, 'error'); if (e.status === 404) go('#/web/codespaces'); } }
+    else f.error = e.message;
+  } finally {
+    f.saving = false;
+    if (E === X) { updateSaveStatus(); markDirtyDots(); }
+  }
+}
+/* The server rejected our save because someone else changed the file first; the 409 body carries their version. */
+function conflictFrom(X, path, f, cur) {
+  if (!cur) { f.rev = null; scheduleSave(X, path, 50); return; }          // it was deleted by someone else — re-create it
+  if (cur.content === f.content) { f.rev = cur.rev; f.saved = cur.content; f.dirty = false; return; }
+  f.conflict = { content: cur.content, rev: cur.rev, by: cur.by };
+  if (E === X && X.active === path) showConflict();
+}
+function showConflict() {
+  const box = $('#cs-conflict'); if (!box || !E) return;
+  const f = E.active && E.files.get(E.active);
+  if (!f || !f.conflict) { box.hidden = true; box.innerHTML = ''; return; }
+  box.hidden = false;
+  box.innerHTML = `<span>${icon('users', 15)} <b>${esc(f.conflict.by || 'Someone')}</b> changed this file while you were editing it.</span>
+    <span class="cs-conflict-acts"><button class="btn sm" data-cs="conflict-theirs">Use their version</button><button class="btn sm primary" data-cs="conflict-mine">Keep mine</button></span>`;
+}
+function resolveConflict(mine) {
+  const f = E && E.files.get(E.active); if (!f || !f.conflict) return;
+  const c = f.conflict; f.conflict = null; f.rev = c.rev;
+  if (mine) { f.saved = c.content; f.dirty = f.content !== f.saved; saveFile(E, E.active); }
+  else { f.content = c.content; f.saved = c.content; f.dirty = false; loadActiveIntoEditor(); }
+  showConflict(); updateSaveStatus(); markDirtyDots();
+}
+function updateSaveStatus() {
+  const el = $('#cs-save'); if (!el || !E) return;
+  const fs = [...E.files.values()];
+  let t, cls = '';
+  if (E.role === 'view') t = 'View only';
+  else if (fs.some((f) => f.conflict)) { t = 'Conflict — choose a version'; cls = 'warn'; }
+  else if (fs.some((f) => f.error)) { t = 'Couldn’t save: ' + fs.find((f) => f.error).error; cls = 'err'; }
+  else if (E.offline) { t = 'Offline — will retry'; cls = 'warn'; }
+  else if (fs.some((f) => f.saving)) t = 'Saving…';
+  else if (fs.some((f) => f.dirty)) t = 'Unsaved changes';
+  else { t = 'All changes saved'; cls = 'ok'; }
+  el.textContent = t; el.className = 'cs-save ' + cls;
+}
+
+/* ---------- live sync with other people editing the same codespace ---------- */
+function pollLoop(X) {
+  const tick = async () => {
+    if (X.dead) return;
+    let wait = document.hidden ? 15000 : 3000;
+    if ([...X.files.values()].some((f) => f.saving)) wait = 400;
+    else {
+      try {
+        const r = await api(`/codespaces/${encodeURIComponent(X.id)}/sync?since=${X.rev}`, { quiet: true });
+        if (X.dead) return;
+        X.offline = false;
+        applyRemote(X, r);
+        X.rev = r.rev;
+        wait = r.has_more ? 0 : wait;
+      } catch (e) {
+        if (X.dead) return;
+        if (e.status === 401) return sessionExpired();
+        if (e.status === 404) { toast('This codespace is no longer available to you.', 'error'); go('#/web/codespaces'); return; }
+        X.offline = e.status === 0; wait = 6000;
+      }
+      if (E === X) updateSaveStatus();
+    }
+    X.pollTimer = setTimeout(tick, wait);
+  };
+  X.pollTimer = setTimeout(tick, 2500);
+}
+function applyRemote(X, r) {
+  let treeChanged = false;
+  if (r.meta) {
+    if (r.meta.name !== X.meta.name) { X.meta.name = r.meta.name; const n = $('#cs-name'); if (n) { n.textContent = r.meta.name; n.title = r.meta.name; } document.title = `${r.meta.name} — Webcord`; }
+    if (r.meta.visibility !== X.meta.visibility) { X.meta.visibility = r.meta.visibility; const v = $('#cs-vis'); if (v) v.innerHTML = visBadge(r.meta.visibility); }
+    X.meta.description = r.meta.description;
+  }
+  if (r.role && r.role !== X.role) {
+    X.role = r.role; const { ta } = edEl(); if (ta) ta.readOnly = !canEdit();
+    toast(r.role === 'view' ? 'Your access changed to view-only.' : 'You can now edit this codespace.', '');
+    treeChanged = true; updateSaveStatus();
+  }
+  for (const rf of r.files) {
+    const f = X.files.get(rf.path);
+    if (rf.deleted) {
+      if (!f) continue;
+      if (f.dirty) { f.rev = null; continue; }                       // I'm editing it: keep my copy, it will be re-created on save
+      X.files.delete(rf.path); X.open = X.open.filter((p) => p !== rf.path); treeChanged = true;
+      if (X.active === rf.path) { X.active = X.open[X.open.length - 1] || null; loadActiveIntoEditor(); }
+      continue;
+    }
+    if (!f) { X.files.set(rf.path, { content: rf.content, saved: rf.content, rev: rf.rev, dirty: false, saving: false, conflict: null, by: rf.by, error: '' }); treeChanged = true; continue; }
+    if (f.rev === rf.rev) continue;
+    if (f.dirty) {
+      if (rf.content === f.content) { f.rev = rf.rev; f.saved = rf.content; f.dirty = false; }
+      else f.conflict = { content: rf.content, rev: rf.rev, by: rf.by };
+      treeChanged = true; continue;
+    }
+    f.content = rf.content; f.saved = rf.content; f.rev = rf.rev; f.by = rf.by;
+    if (X.active === rf.path) {
+      const { ta } = edEl(); const s = ta.selectionStart, e = ta.selectionEnd, st = ta.scrollTop, sl = ta.scrollLeft;
+      ta.value = rf.content; paintEditor(false);
+      ta.setSelectionRange(Math.min(s, rf.content.length), Math.min(e, rf.content.length)); ta.scrollTop = st; ta.scrollLeft = sl; syncScroll();
+    }
+  }
+  if (treeChanged) { renderFiles(); renderTabs(); }
+  showConflict();
+}
+
+/* ---------- file operations ---------- */
+function starterFor(path) {
+  if (kindOf(path) === 'html') return `<!DOCTYPE html>\n<html lang="en">\n<head>\n  <meta charset="UTF-8">\n  <meta name="viewport" content="width=device-width, initial-scale=1">\n  <title>${esc(path.split('/').pop().replace(/\.\w+$/, ''))}</title>\n</head>\n<body>\n  \n</body>\n</html>\n`;
+  return '';
+}
+function newFileModal() {
+  if (!canEdit()) return;
   openModal({
-    title,
-    html: `<form id="cs-fname" novalidate>${fieldHtml({ id: 'cs-f-name', label, value, placeholder: 'script.js', hint: 'Letters, numbers, dots, dashes and underscores. Use folders like <code>css/main.css</code>.', maxlength: 100 })}<div class="modal-actions"><button class="btn" type="button" data-close>Cancel</button><button class="btn primary" type="submit">${okLabel}</button></div></form>`,
+    title: 'New file',
+    html: `<form id="nf-form" novalidate>${fieldHtml({ id: 'nf-path', label: 'File name', placeholder: 'script.js', maxlength: 100, hint: 'Use a slash to put it in a folder, e.g. <code>js/app.js</code>.' })}
+      <div class="modal-actions"><button type="button" class="btn" data-close>Cancel</button><button class="btn primary" type="submit">Create file</button></div></form>`,
     onOpen: (d, close) => {
-      const inp = $('#cs-f-name', d); inp.focus(); inp.setSelectionRange(0, value.includes('.') ? value.lastIndexOf('.') : value.length);
-      $('#cs-fname', d).addEventListener('submit', (e) => {
-        e.preventDefault();
-        const name = inp.value.trim().replace(/^\/+/, '');
-        const err = !name ? 'Enter a file name.' : !csValidPath(name) ? 'That isn’t a valid file name.' : name !== value && CS.files.has(name) ? 'A file with that name already exists.' : '';
-        if (err) return setErr('cs-f-name', err);
-        close(); onSubmit(name);
+      $('#nf-path', d).focus();
+      $('#nf-form', d).addEventListener('submit', async (ev) => {
+        ev.preventDefault();
+        const X = E, path = csNorm($('#nf-path', d).value), btn = $('button[type=submit]', d);
+        const err = csPathError(path) || (X.files.has(path) ? 'A file with that name already exists.' : '');
+        if (err) return setErr('nf-path', err);
+        busy(btn, true, 'Creating…');
+        try {
+          const content = starterFor(path);
+          const r = await api(`/codespaces/${encodeURIComponent(X.id)}/files`, { method: 'PUT', body: { path, content, create: true } });
+          if (E !== X) return close();
+          X.files.set(path, { content, saved: content, rev: r.file.rev, dirty: false, saving: false, conflict: null, by: S.user.username, error: '' });
+          close(); renderFiles(); openFile(path);
+        } catch (e) { busy(btn, false); setErr('nf-path', e.message); }
       });
     },
   });
 }
-function csMarkDirty(p) { CS.dirty.add(p); csSetStatus('dirty'); csScheduleSave(); }
-function csNewFile() {
-  if (CS.files.size >= CS_MAX_FILES) return toast(`A codespace can have at most ${CS_MAX_FILES} files.`, 'error');
-  csFileModal({ title: 'New file', label: 'File name', okLabel: 'Create', onSubmit: (name) => {
-    CS.files.set(name, { content: '' }); CS.removed.delete(name); csMarkDirty(name); csOpenFile(name);
-  } });
+function renameFileModal(path) {
+  if (!canEdit() || !E.files.has(path)) return;
+  openModal({
+    title: 'Rename file',
+    html: `<form id="rn-form" novalidate>${fieldHtml({ id: 'rn-path', label: 'New name', value: path, maxlength: 100, hint: 'Change the folder part to move the file.' })}
+      <div class="modal-actions"><button type="button" class="btn" data-close>Cancel</button><button class="btn primary" type="submit">Rename</button></div></form>`,
+    onOpen: (d, close) => {
+      const inp = $('#rn-path', d); inp.focus(); inp.setSelectionRange(path.lastIndexOf('/') + 1, path.length - (fileExt(path).length ? fileExt(path).length + 1 : 0));
+      $('#rn-form', d).addEventListener('submit', async (ev) => {
+        ev.preventDefault();
+        const X = E, to = csNorm(inp.value), btn = $('button[type=submit]', d);
+        if (to === path) return close();
+        const err = csPathError(to) || (X.files.has(to) ? 'A file with that name already exists.' : '');
+        if (err) return setErr('rn-path', err);
+        busy(btn, true, 'Renaming…');
+        try {
+          const f = X.files.get(path);
+          f.conflict = null;
+          if (f.dirty) { f.saving = false; await saveFile(X, path); }
+          if (f.dirty) throw new Error('Couldn’t save your latest changes first. Try again.');
+          await api(`/codespaces/${encodeURIComponent(X.id)}/files/rename`, { method: 'POST', body: { from: path, to } });
+          if (E !== X) return close();
+          X.files.delete(path); f.rev = null; X.files.set(to, f);
+          X.open = X.open.map((p) => (p === path ? to : p)); if (X.active === path) X.active = to;
+          if (X.scroll.has(path)) { X.scroll.set(to, X.scroll.get(path)); X.scroll.delete(path); }
+          close(); renderFiles(); renderTabs(); loadActiveIntoEditor();
+        } catch (e) { busy(btn, false); setErr('rn-path', e.message); }
+      });
+    },
+  });
 }
-function csRenameFile(p) {
-  csFileModal({ title: 'Rename file', label: 'New name', value: p, okLabel: 'Rename', onSubmit: (name) => {
-    if (name === p) return;
-    const f = CS.files.get(p); if (!f) return;
-    CS.files.delete(p); CS.files.set(name, f); CS.removed.add(p); CS.removed.delete(name); CS.dirty.delete(p); CS.dirty.add(name);
-    CS.open = CS.open.map((x) => (x === p ? name : x)); if (CS.active === p) CS.active = name;
-    csSetStatus('dirty'); csScheduleSave(); csRenderFiles(); csRenderTabs();
-  } });
+async function deleteFile(path) {
+  const X = E; if (!canEdit() || !X.files.has(path)) return;
+  if (!(await confirmDialog(`Delete “${path}”? This can’t be undone.`))) return;
+  try {
+    clearTimeout(X.timers.get(path));
+    await api(`/codespaces/${encodeURIComponent(X.id)}/files?path=${encodeURIComponent(path)}`, { method: 'DELETE' });
+    if (E !== X) return;
+    X.files.delete(path); X.scroll.delete(path); closeTab(path); renderFiles();
+  } catch (e) { toast(e.message, 'error'); }
 }
-async function csDeleteFile(p) {
-  if (!(await confirmDialog(`Delete ${p}? Everyone with access to this codespace will lose it.`, 'Delete'))) return;
-  CS.files.delete(p); CS.removed.add(p); CS.dirty.delete(p); csSetStatus('dirty'); csScheduleSave();
-  csCloseTab(p); csRenderFiles();
-}
-async function csImport(e) {
-  const list = [...e.target.files]; e.target.value = '';
+async function uploadFiles(list) {
+  const X = E; if (!canEdit()) return;
+  let added = 0;
   for (const file of list) {
-    const name = file.name.replace(/[^A-Za-z0-9_.\-]/g, '_').slice(0, 100);
-    if (!csValidPath(name) || !isTextFile({ name })) { toast(`${file.name}: only text and code files can be imported.`, 'error'); continue; }
-    if (file.size > CS_MAX_CHARS) { toast(`${file.name} is too large (limit 200 KB).`, 'error'); continue; }
-    if (CS.files.size >= CS_MAX_FILES && !CS.files.has(name)) { toast(`A codespace can have at most ${CS_MAX_FILES} files.`, 'error'); break; }
-    const text = (await file.text()).replace(/\r\n/g, '\n');
-    CS.files.set(name, { content: text }); CS.removed.delete(name); csMarkDirty(name); csOpenFile(name);
-  }
-}
-
-/* ---------- the editor: a textarea with a Shiki-highlighted layer underneath ---------- */
-function csMountEditor() {
-  $('#cs-editor').innerHTML = `<div class="ed" id="ed"><pre class="ed-gutter" id="ed-gutter" aria-hidden="true"></pre><div class="ed-scroll"><pre class="ed-hl" id="ed-hl" aria-hidden="true"><code id="ed-code"></code></pre><textarea class="ed-ta" id="cs-ed-ta" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off" wrap="off" aria-label="Code editor"></textarea></div></div>
-    <div class="ed-empty" id="ed-empty" hidden><div class="em-ico">${icon('file', 22)}</div><h3>No file open</h3><p>Pick a file on the left, or create a new one.</p><button class="btn primary sm" data-action="cs-new-file">${icon('plus', 15)} New file</button></div>`;
-  const ta = $('#cs-ed-ta');
-  ta.addEventListener('input', csOnInput);
-  ta.addEventListener('scroll', csSyncScroll);
-  ta.addEventListener('keydown', csKeydown);
-}
-function csSyncScroll() {
-  const ta = $('#cs-ed-ta'), hl = $('#ed-hl'), g = $('#ed-gutter'); if (!ta) return;
-  hl.scrollTop = ta.scrollTop; hl.scrollLeft = ta.scrollLeft; g.scrollTop = ta.scrollTop;
-}
-function csLoadActive() {
-  const ta = $('#cs-ed-ta'); if (!ta) return;
-  const f = CS.files.get(CS.active);
-  $('#ed').hidden = !f; $('#ed-empty').hidden = !!f;
-  if (!f) return;
-  ta.value = f.content; ta.scrollTop = 0; ta.scrollLeft = 0; $('#ed-gutter')._n = -1; csPaint();
-}
-function csPaint() {
-  const ta = $('#cs-ed-ta'); if (!ta || !CS.active) return;
-  const code = ta.value, n = code.split('\n').length, g = $('#ed-gutter');
-  if (g._n !== n) { g._n = n; g.textContent = Array.from({ length: n }, (_, i) => i + 1).join('\n'); }
-  const lang = fileKind(CS.active).lang, use = wantsHl(code, lang);
-  $('#ed').classList.toggle('plain', !use);
-  const el = $('#ed-code');
-  if (!use) { el.textContent = ''; return; }
-  el.textContent = code + '\n'; // same metrics as the textarea until the highlighted version arrives
-  clearTimeout(CS.hlT);
-  const tok = ++CS.hlTok;
-  CS.hlT = setTimeout(async () => {
+    const path = file.name.replace(/\s+/g, '-');
+    const err = csPathError(path);
+    if (err) { toast(`${file.name}: ${err}`, 'error'); continue; }
+    if (file.size > MAX_FILE_CHARS * 3) { toast(`${file.name} is too large.`, 'error'); continue; }
+    if (X.files.has(path)) { toast(`${path} already exists.`, 'error'); continue; }
     try {
-      const html = await shikiPre(code + '\n', lang, false);
-      if (!html || tok !== CS.hlTok || $('#cs-ed-ta')?.value !== code) return;
-      const t = document.createElement('template'); t.innerHTML = html;
-      const inner = t.content.querySelector('pre code')?.innerHTML;
-      if (inner != null) $('#ed-code').innerHTML = inner;
-    } catch { /* highlighting is optional */ }
-  }, code.length > 20000 ? 200 : 20);
-  csSyncScroll();
-}
-function csOnInput() {
-  const f = CS.files.get(CS.active); if (!f) return;
-  f.content = $('#cs-ed-ta').value;
-  const was = CS.dirty.has(CS.active);
-  csMarkDirty(CS.active); csPaint();
-  if (!was) { csRenderTabs(); csRenderFiles(); }
-}
-function csInsert(ta, text) {
-  ta.focus();
-  if (!document.execCommand('insertText', false, text)) { ta.setRangeText(text, ta.selectionStart, ta.selectionEnd, 'end'); ta.dispatchEvent(new Event('input')); }
-}
-function csKeydown(e) {
-  const ta = e.target, mod = e.ctrlKey || e.metaKey;
-  if (mod && e.key === 'Enter') { e.preventDefault(); return runCode(); }
-  if (e.isComposing || mod || e.altKey) return;
-  const unit = fileExt(CS.active) === 'py' ? '    ' : '  ';
-  if (e.key === 'Tab') {
-    e.preventDefault();
-    const s = ta.selectionStart, en = ta.selectionEnd;
-    if (!e.shiftKey && s === en) return csInsert(ta, unit);
-    const v = ta.value, ls = v.lastIndexOf('\n', s - 1) + 1; let le = v.indexOf('\n', en); if (le < 0) le = v.length;
-    const block = v.slice(ls, le).split('\n').map((l) => (e.shiftKey ? l.replace(new RegExp('^(?: {1,' + unit.length + '}|\\t)'), '') : unit + l)).join('\n');
-    ta.setSelectionRange(ls, le); csInsert(ta, block); ta.setSelectionRange(ls, ls + block.length);
-  } else if (e.key === 'Enter' && !e.shiftKey && ta.selectionStart === ta.selectionEnd) {
-    const v = ta.value, s = ta.selectionStart, ls = v.lastIndexOf('\n', s - 1) + 1, line = v.slice(ls, s);
-    const ind = line.match(/^[ \t]*/)[0], last = line.trimEnd().slice(-1), py = unit.length === 4;
-    const extra = '{(['.includes(last) && last ? unit : py && last === ':' ? unit : '';
-    e.preventDefault();
-    if (extra && ((last === '{' && v[s] === '}') || (last === '(' && v[s] === ')') || (last === '[' && v[s] === ']'))) {
-      csInsert(ta, '\n' + ind + extra + '\n' + ind); const pos = s + 1 + ind.length + extra.length; ta.setSelectionRange(pos, pos);
-    } else csInsert(ta, '\n' + ind + extra);
+      const content = (await file.text()).replace(/\r\n/g, '\n');
+      const r = await api(`/codespaces/${encodeURIComponent(X.id)}/files`, { method: 'PUT', body: { path, content, create: true } });
+      if (E !== X) return;
+      X.files.set(path, { content, saved: content, rev: r.file.rev, dirty: false, saving: false, conflict: null, by: S.user.username, error: '' });
+      added++;
+    } catch (e) { toast(`${file.name}: ${e.message}`, 'error'); }
   }
+  if (added) { renderFiles(); toast(`Uploaded ${added} file${added === 1 ? '' : 's'}.`, 'success'); }
 }
 
-/* ---------- saving + live collaboration ---------- */
-function csScheduleSave() { clearTimeout(CS.saveT); CS.saveT = setTimeout(() => saveNow(), 900); }
-async function saveNow(force = false) {
-  clearTimeout(CS.saveT);
-  if (!CS.id || (CS.saving && !force) || (!CS.dirty.size && !CS.removed.size)) return;
-  const id = CS.id, sent = {}, upsert = {};
-  for (const p of CS.dirty) { const f = CS.files.get(p); if (f) { upsert[p] = f.content; sent[p] = f.content; } }
-  const remove = [...CS.removed];
-  CS.saving = true; csSetStatus('saving');
-  try {
-    await api(`/codespaces/${id}/files`, { method: 'PUT', body: { upsert, remove } });
-    if (CS.id !== id) return;
-    for (const p of Object.keys(sent)) { if (CS.files.get(p)?.content === sent[p]) CS.dirty.delete(p); }
-    for (const p of remove) CS.removed.delete(p);
-    csSetStatus(CS.dirty.size || CS.removed.size ? 'dirty' : 'saved');
-    csRenderTabs(); csRenderFiles();
-  } catch (e) {
-    if (CS.id !== id) return;
-    csSetStatus('error'); toast(e.message, 'error');
-    CS.saveT = setTimeout(() => saveNow(), 6000);
-  } finally { if (CS.id === id) { CS.saving = false; if ((CS.dirty.size || CS.removed.size) && CS.status !== 'error') csScheduleSave(); } }
+/* ---------- running + preview ---------- */
+function filesObject() { const o = {}; for (const [p, f] of E.files) o[p] = f.content; return o; }
+function pickEntry() {
+  const paths = [...E.files.keys()];
+  const htmls = paths.filter((p) => kindOf(p) === 'html');
+  const lastHtml = E.entry && E.files.has(E.entry) && kindOf(E.entry) === 'html' ? E.entry : E.files.has('index.html') ? 'index.html' : htmls[0];
+  const a = E.active;
+  const k = a ? kindOf(a) : null;
+  if (k === 'html' || k === 'py' || k === 'md' || k === 'svg') return a;
+  if (k === 'js') return htmls.length ? lastHtml : a;
+  if (htmls.length) return lastHtml;
+  return ['main.py', 'main.js', 'index.js', 'app.js', 'README.md'].find((p) => E.files.has(p)) || a || paths[0] || null;
 }
-async function csPoll() {
-  if (!CS.id || CS.polling || document.hidden) return;
-  const id = CS.id; CS.polling = true;
-  try {
-    const r = await api(`/codespaces/${id}/changes?since=${CS.since}`, { quiet: true });
-    if (CS.id !== id) return;
-    CS.since = Math.max(CS.since, r.now);
-    CS.meta = r.codespace; csRenderHead();
-    csApplyRemote(r.files);
-  } catch (e) {
-    if (CS.id === id && e.status === 404) { toast('This codespace is no longer available to you.', 'error'); csLeave(); go('#/web/code'); }
-  } finally { if (CS.id === id) CS.polling = false; }
-}
-function csApplyRemote(files) {
-  let structure = false, activeChanged = false;
-  for (const f of files) {
-    if (CS.dirty.has(f.path) || CS.removed.has(f.path)) continue; // your unsaved version wins until it is saved
-    const cur = CS.files.get(f.path);
-    if (f.deleted) {
-      if (cur) { CS.files.delete(f.path); CS.open = CS.open.filter((x) => x !== f.path); if (CS.active === f.path) { CS.active = CS.open[0] || null; activeChanged = true; } structure = true; }
-    } else if (!cur) { CS.files.set(f.path, { content: f.content }); structure = true; }
-    else if (cur.content !== f.content) { cur.content = f.content; if (CS.active === f.path) activeChanged = true; }
+function runPreview(entry, opts = {}) {
+  if (!E) return;
+  let target = entry;
+  if (!target) {
+    target = (opts.auto && E.entry && E.files.has(E.entry) && kindOf(E.entry) === 'html' && (!E.active || kindOf(E.active) !== 'html' || E.active === E.entry)) ? E.entry : pickEntry();
+    if (opts.auto && target && ['py', 'js'].includes(kindOf(target))) return;      // don't re-execute programs on every keystroke
   }
-  if (structure) { csRenderFiles(); csRenderTabs(); }
-  if (activeChanged) {
-    const ta = $('#cs-ed-ta'), f = CS.files.get(CS.active);
-    if (!f) return csLoadActive();
-    if (ta && ta.value !== f.content) { const s = ta.selectionStart, e = ta.selectionEnd, st = ta.scrollTop; ta.value = f.content; ta.setSelectionRange(Math.min(s, f.content.length), Math.min(e, f.content.length)); ta.scrollTop = st; csPaint(); }
-  }
+  if (!target || !E.files.has(target)) { return startFrame({ kind: 'message', title: 'Nothing to run', text: 'Add an index.html, main.py or main.js file and press Run.' }, ''); }
+  if (!opts.noHistory && E.hist[E.hi] !== target) { E.hist = E.hist.slice(0, E.hi + 1); E.hist.push(target); E.hi = E.hist.length - 1; }
+  E.entry = kindOf(target) === 'html' ? target : E.entry;
+  startFrame({ kind: kindOf(target), entry: target, files: filesObject() }, target);
+  if (!opts.quiet && !opts.auto && window.innerWidth <= 860) setPane('preview');
 }
-
-/* ---------- running: browser-like preview, scripts and Python ---------- */
-function csPickRun() {
-  const paths = [...CS.files.keys()], a = CS.active, e = a ? fileExt(a) : '';
-  const htmls = paths.filter((p) => /\.html?$/.test(p)), idx = htmls.includes('index.html') ? 'index.html' : htmls[0];
-  if (e === 'py') return { kind: 'python', entry: a };
-  if (/^html?$/.test(e)) return { kind: 'web', entry: a };
-  if (/^m?js$/.test(e)) {
-    const base = a.slice(a.lastIndexOf('/') + 1);
-    const page = htmls.find((h) => CS.files.get(h).content.includes(a) || CS.files.get(h).content.includes(base));
-    return page ? { kind: 'web', entry: page } : { kind: 'script', entry: a };
-  }
-  if (idx) return { kind: 'web', entry: idx };
-  const py = paths.find((p) => p === 'main.py') || paths.find((p) => /\.py$/.test(p)); if (py) return { kind: 'python', entry: py };
-  const js = paths.find((p) => p === 'main.js') || paths.find((p) => /\.m?js$/.test(p)); if (js) return { kind: 'script', entry: js };
-  return null;
-}
-function runCode() {
-  const pick = csPickRun();
-  if (!pick) return toast('Nothing to run yet — add an index.html, a .js or a .py file.', 'error');
-  saveNow();
-  csClearLogs();
-  if ($('#cs') && matchMedia('(max-width: 860px)').matches) $('#cs').dataset.pane = 'preview', csSyncSeg();
-  if (pick.kind === 'python') return csRunPython(pick.entry);
-  if (pick.kind === 'script') CS.scriptEntry = pick.entry;
-  const entry = pick.kind === 'script' ? '__run__.html' : pick.entry;
-  CS.hist = [entry]; CS.hi = 0;
-  csStartWeb(entry, pick.kind === 'script' ? 'console' : 'preview');
-}
-function csFrame(src) {
+function startFrame(payload, label) {
+  const stage = $('#pv-stage'); if (!stage) return;
+  stage.innerHTML = '';
+  clearLogs();
+  const runId = ++E.runSeq;
   const f = document.createElement('iframe');
-  f.setAttribute('sandbox', 'allow-scripts allow-forms allow-modals allow-popups allow-downloads'); // no allow-same-origin: user code can't reach Webcord
-  f.setAttribute('referrerpolicy', 'no-referrer'); f.src = src; return f;
+  f.className = 'pv-frame'; f.title = 'Live preview'; f.setAttribute('sandbox', SANDBOX); f.referrerPolicy = 'no-referrer';
+  E.frame = f; E.payload = Object.assign({ src: 'cs-host', type: 'run', runId }, payload); E.sent = false;
+  f.src = RUNNER_URL;
+  stage.appendChild(f);
+  const url = $('#pv-url'); if (url) { url.value = label || ''; url.title = label || ''; }
+  updateHistoryButtons();
 }
-function csKillWeb() { CS.webFrame?.remove(); CS.webFrame = null; CS.webPayload = null; clearTimeout(CS.loadT); $('#cs-loadbar')?.classList.remove('on'); }
-function csStartWeb(entry, view) {
-  csKillWeb();
-  const files = csSnapshot();
-  let payload;
-  if (entry === '__run__.html') {
-    const se = CS.scriptEntry, mod = /^\s*(import|export)\s/m.test(files[se] || '');
-    files[entry] = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${esc(se)}</title></head><body><script ${mod ? 'type="module" ' : ''}src="${esc(se)}"></script></body></html>`;
-  }
-  payload = entry in files ? { kind: 'web', entry, files } : { kind: 'web', notFound: entry, files: {} };
-  const host = $('#cs-frame-host'); if (!host) return;
-  $('#cs-pempty')?.remove();
-  const f = csFrame('preview.html'); host.appendChild(f);
-  CS.webFrame = f; CS.webPayload = payload;
-  const shown = entry === '__run__.html' ? CS.scriptEntry : entry;
-  $('#cs-url-path').textContent = shown === 'index.html' ? '/' : '/' + shown;
-  $('#cs-ptitle').textContent = shown.slice(shown.lastIndexOf('/') + 1);
-  $('#cs-stop').hidden = false; $('#cs-loadbar').classList.add('on');
-  CS.loadT = setTimeout(() => $('#cs-loadbar')?.classList.remove('on'), 12000);
-  csNavButtons(); csSetView(view);
+function navigateTo(raw) {
+  const want = csNorm(String(raw || '').split('#')[0].split('?')[0]);
+  const hit = [...E.files.keys()].find((p) => p === want) || [...E.files.keys()].find((p) => p.toLowerCase() === want.toLowerCase())
+    || (want === '' ? null : [...E.files.keys()].find((p) => p === want + '/index.html'));
+  if (hit) return runPreview(hit);
+  if (!E.hist.length || E.hist[E.hi] !== want) { E.hist = E.hist.slice(0, E.hi + 1); E.hist.push(want); E.hi = E.hist.length - 1; }
+  startFrame({ kind: 'message', title: '404', text: `Cannot find “${want || '/'}” in this codespace.` }, want);
 }
-function csNavButtons() { const b = $('#cs-nb'), f = $('#cs-nf'); if (b) b.disabled = CS.hi <= 0; if (f) f.disabled = CS.hi >= CS.hist.length - 1; }
-function csNavigate(href) {
-  const cur = CS.hist[CS.hi] === '__run__.html' ? CS.scriptEntry : CS.hist[CS.hi] || 'index.html';
-  let path = csResolve(cur, href);
-  if (path === null) return csStartWeb(CS.hist[CS.hi], CS.view);
-  if (path === '') path = 'index.html';
-  if (!CS.files.has(path) && CS.files.has(path.replace(/\/$/, '') + '/index.html')) path = path.replace(/\/$/, '') + '/index.html';
-  if (path === cur && !/[?#]/.test(href)) return csStartWeb(CS.hist[CS.hi], 'preview');
-  CS.hist = CS.hist.slice(0, CS.hi + 1); CS.hist.push(path); CS.hi++;
-  csStartWeb(path, 'preview');
+function historyGo(d) {
+  const i = E.hi + d; if (i < 0 || i >= E.hist.length) return;
+  E.hi = i; const p = E.hist[i];
+  if (E.files.has(p)) runPreview(p, { noHistory: true }); else startFrame({ kind: 'message', title: '404', text: `Cannot find “${p}” in this codespace.` }, p);
 }
-function csHistGo(d) {
-  const i = CS.hi + d; if (i < 0 || i >= CS.hist.length) return;
-  CS.hi = i; csStartWeb(CS.hist[i], CS.view);
-}
-function csRunPython(entry) {
-  csKillWeb(); csSetView('console');
-  csLog('info', `Running ${entry}…`);
-  if (!CS.pyFrame) { CS.pyFrame = csFrame('preview.html'); CS.pyFrame.className = 'cs-pyframe'; CS.pyReady = false; $('#cs').appendChild(CS.pyFrame); }
-  const payload = { kind: 'python', entry, files: csSnapshot() };
-  if (CS.pyReady) CS.pyFrame.contentWindow.postMessage({ wc: 1, type: 'run', payload }, '*'); else CS.pyQueue = payload;
-  $('#cs-stop').hidden = false;
-}
-function csStop() {
-  csKillWeb(); if (CS.pyFrame) { CS.pyFrame.remove(); CS.pyFrame = null; CS.pyReady = false; CS.pyQueue = null; }
-  $('#cs-stop').hidden = true; csLog('info', 'Stopped.');
-  const host = $('#cs-frame-host');
-  if (host && !$('#cs-pempty')) host.insertAdjacentHTML('beforeend', `<div class="cs-empty" id="cs-pempty"><div class="em-ico">${icon('play', 22)}</div><h3>Stopped</h3><p>Press <b>Run</b> to start again.</p></div>`);
+function updateHistoryButtons() {
+  const b = $('#pv-back'), f = $('#pv-fwd'); if (!b || !E) return;
+  b.disabled = E.hi <= 0; f.disabled = E.hi >= E.hist.length - 1;
 }
 window.addEventListener('message', (e) => {
-  const d = e.data; if (!CS.id || !d || d.wc !== 1) return;
-  const web = CS.webFrame && e.source === CS.webFrame.contentWindow, py = CS.pyFrame && e.source === CS.pyFrame.contentWindow;
-  if (!web && !py) return; // only our own sandboxed frames are listened to
-  switch (d.type) {
-    case 'ready':
-      if (web && CS.webPayload) { e.source.postMessage({ wc: 1, type: 'run', payload: CS.webPayload }, '*'); CS.webPayload = null; }
-      else if (py) { CS.pyReady = true; if (CS.pyQueue) { e.source.postMessage({ wc: 1, type: 'run', payload: CS.pyQueue }, '*'); CS.pyQueue = null; } }
-      break;
-    case 'console': csLog(['log', 'info', 'warn', 'error', 'result'].includes(d.level) ? d.level : 'log', String(d.text ?? '').slice(0, 5000)); break;
-    case 'clear': csClearLogs(); break;
-    case 'title': if (web) { const t = String(d.title || '').trim(); const el = $('#cs-ptitle'); if (el) el.textContent = t || CS.hist[CS.hi]?.split('/').pop() || 'Preview'; } break;
-    case 'loaded': if (web) { clearTimeout(CS.loadT); $('#cs-loadbar')?.classList.remove('on'); } break;
-    case 'navigate': if (web) csNavigate(String(d.href || '')); break;
-    case 'done': if (py) { const s = $('#cs-stop'); if (s) s.hidden = true; } break;
-    default: break;
+  const d = e.data;
+  if (!E || !d || d.src !== 'cs-runner' || !E.frame || e.source !== E.frame.contentWindow) return;
+  if (d.type === 'ready') {
+    if (E.payload && !E.sent) { E.sent = true; E.frame.contentWindow.postMessage(E.payload, '*'); }
+    return;
+  }
+  if (!E.payload || d.runId !== E.payload.runId) return;
+  if (d.type === 'console') addLog(d.level, d.text);
+  else if (d.type === 'clear') clearLogs();
+  else if (d.type === 'loaded') { const u = $('#pv-url'); if (u && d.title) u.title = d.title; }
+  else if (d.type === 'navigate') {
+    if (d.path) runPreview(d.path);
+    else navigateTo(d.href);
   }
 });
 
-/* ---------- console ---------- */
-const csLogHtml = (l) => `<div class="cl cl-${l.level}"><pre>${esc(l.level === 'result' ? '← ' + l.text : l.text)}</pre><time>${new Date(l.t).toLocaleTimeString([], { hour12: false })}</time></div>`;
-function csAppendLog(l) {
-  const list = $('#cs-log'); if (!list) return;
-  const near = list.scrollHeight - list.scrollTop - list.clientHeight < 60;
-  list.insertAdjacentHTML('beforeend', csLogHtml(l));
-  while (list.children.length > 500) list.firstChild.remove();
-  if (near) list.scrollTop = list.scrollHeight;
+/* console panel */
+const LOG_ICON = { error: '✕', warn: '!', info: 'i', debug: '·', log: '›' };
+function addLog(level, text) {
+  const box = $('#pv-logs'); if (!box || !E) return;
+  level = LOG_ICON[level] ? level : 'log';
+  E.logs.push({ level, text });
+  if (E.logs.length > 400) { E.logs.shift(); box.firstChild?.remove(); }
+  const row = document.createElement('div'); row.className = 'cl cl-' + level;
+  row.innerHTML = `<span class="cl-ico" aria-hidden="true">${LOG_ICON[level]}</span><pre></pre>`; row.lastChild.textContent = String(text).slice(0, 5000);
+  const stick = box.scrollTop + box.clientHeight >= box.scrollHeight - 30;
+  box.appendChild(row); if (stick) box.scrollTop = box.scrollHeight;
+  if (level === 'error') { E.errors++; setConsole(true); }
+  updateConsoleCount();
 }
-function csLog(level, text) {
-  const l = { level, text, t: Date.now() };
-  CS.logs.push(l); if (CS.logs.length > 500) CS.logs.shift();
-  if (level === 'error') CS.errs++;
-  csAppendLog(l); csUpdateBadge();
-  if (level === 'error' && CS.view === 'preview' && CS.webFrame) $('#cs-pane-preview')?.classList.add('has-err');
+function clearLogs() { if (!E) return; E.logs = []; E.errors = 0; const b = $('#pv-logs'); if (b) b.innerHTML = ''; updateConsoleCount(); }
+function updateConsoleCount() {
+  const c = $('#pv-count'); if (!c || !E) return;
+  c.hidden = !E.logs.length; c.textContent = E.logs.length > 99 ? '99+' : E.logs.length; c.classList.toggle('err', E.errors > 0);
 }
-function csClearLogs() { CS.logs = []; CS.errs = 0; const l = $('#cs-log'); if (l) l.innerHTML = ''; csUpdateBadge(); $('#cs-pane-preview')?.classList.remove('has-err'); }
-function csUpdateBadge() {
-  const b = $('#cs-badge'); if (!b) return;
-  b.hidden = !CS.logs.length; b.textContent = CS.errs ? CS.errs : CS.logs.length; b.classList.toggle('err', !!CS.errs);
+function setConsole(open) {
+  if (!E) return; E.consoleOpen = open;
+  const p = $('#pv-console'), b = $('#pv-console-btn'); if (p) p.hidden = !open; if (b) b.setAttribute('aria-pressed', String(open));
 }
-function csRepl(e) {
-  e.preventDefault();
-  const inp = $('#cs-repl-in'), code = inp.value.trim(); if (!code) return;
-  inp.value = '';
-  csLog('info', '› ' + code);
-  if (!CS.webFrame) return csLog('warn', 'Run your page first, then you can run JavaScript in it here.');
-  CS.webFrame.contentWindow.postMessage({ wc: 1, type: 'eval', code }, '*');
-}
-function csSetView(v) {
-  CS.view = v;
-  $$('.cs-rtabs button').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.view === v)));
-  $('#cs-pane-preview').hidden = v !== 'preview'; $('#cs-pane-console').hidden = v !== 'console';
-  if (v === 'console') { const l = $('#cs-log'); if (l) l.scrollTop = l.scrollHeight; $('#cs-pane-preview').classList.remove('has-err'); }
-}
-function csSyncSeg() { $$('.cs-seg button').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.pane === $('#cs').dataset.pane))); }
-
-/* ---------- resizable split ---------- */
-function csStartResize(e) {
-  const body = $('#cs-body'), cs = $('#cs'); if (matchMedia('(max-width: 860px)').matches) return;
-  e.preventDefault(); cs.classList.add('dragging'); e.target.setPointerCapture(e.pointerId);
-  const move = (ev) => { const r = body.getBoundingClientRect(); const pct = Math.min(75, Math.max(25, ((ev.clientX - r.left) / r.width) * 100)); body.style.setProperty('--split', pct + '%'); };
-  const up = () => { cs.classList.remove('dragging'); e.target.removeEventListener('pointermove', move); e.target.removeEventListener('pointerup', up); e.target.removeEventListener('pointercancel', up); };
-  e.target.addEventListener('pointermove', move); e.target.addEventListener('pointerup', up); e.target.addEventListener('pointercancel', up);
+function setPane(p) {
+  const body = $('#cs-body'); if (!body) return; body.dataset.pane = p; if (E) E.pane = p;
+  $$('.cs-panes button').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.pane === p)));
 }
 
-/* ---------- sharing / details ---------- */
-function csShare() {
-  const render = (d) => {
-    const m = CS.meta, owner = m.is_owner, me = S.user.username;
-    const body = $('#cs-share-body', d);
-    const person = (u, role) => `<div class="person">${avatar(u, 32)}<span class="pn"><b>${esc(u.display_name)}</b><small>@${esc(u.username)}${role ? ' · ' + role : ''}</small></span>${!role && (owner || u.username === me) ? `<button type="button" class="btn sm ghost" data-rm="${esc(u.username)}">${u.username === me ? 'Leave' : 'Remove'}</button>` : ''}</div>`;
-    body.innerHTML = `<div class="opt-list">${Object.entries(CS_VIS).map(([k, v]) => `<label class="opt${m.visibility === k ? ' on' : ''}"><input type="radio" name="vis" value="${k}" ${m.visibility === k ? 'checked' : ''} ${owner ? '' : 'disabled'}><span class="opt-ico">${icon(v.icon, 18)}</span><span><b>${v.label}</b><small>${v.desc}</small></span></label>`).join('')}</div>
-      ${m.visibility === 'public' ? '<p class="note warn">Anyone logged in to Webcord can find and edit this codespace.</p>' : ''}
-      <h4 class="sub-h">People with access</h4>
-      <div class="people">${person(m.owner, 'Owner')}${(m.members || []).map((u) => person(u, '')).join('') || (m.visibility === 'shared' ? '<p class="muted-p">Nobody yet. Add people below.</p>' : '')}</div>
-      ${owner ? `<div class="field" style="margin-top:14px"><label for="cs-user-q">Add people</label><input class="input" id="cs-user-q" placeholder="Search by username or name" autocomplete="off"><div id="cs-user-res" class="people-res"></div></div>` : ''}
-      ${m.visibility === 'private' && !owner ? '' : ''}
-      <div class="modal-actions"><button class="btn" type="button" data-copy>${icon('link', 15)} Copy link</button><button class="btn primary" type="button" data-close>Done</button></div>`;
-  };
+/* ---------- sharing + settings ---------- */
+function renameCodespaceModal() {
+  const X = E; if (X.role !== 'owner') return;
   openModal({
-    title: CS.meta.is_owner ? 'Share codespace' : 'People', html: '<div id="cs-share-body"></div>',
+    title: 'Rename codespace',
+    html: `<form id="rc-form" novalidate><div class="form-error" id="rc-error" role="alert"></div>
+      ${fieldHtml({ id: 'rc-name', label: 'Name', value: X.meta.name, maxlength: 60 })}
+      ${fieldHtml({ id: 'rc-desc', label: 'Description', textarea: true, rows: 2, required: false, value: X.meta.description || '', maxlength: 300 })}
+      <div class="modal-actions"><button class="btn danger" type="button" data-del style="margin-right:auto">${icon('trash', 15)} Delete</button><button type="button" class="btn" data-close>Cancel</button><button class="btn primary" type="submit">Save</button></div></form>`,
     onOpen: (d, close) => {
-      render(d);
-      const patchMeta = (cs) => { CS.meta = { ...CS.meta, ...cs }; csRenderHead(); render(d); };
-      d.addEventListener('change', async (e) => {
-        if (e.target.name !== 'vis') return;
-        try { const r = await api(`/codespaces/${CS.id}`, { method: 'PATCH', body: { visibility: e.target.value } }); patchMeta(r.codespace); } catch (err) { toast(err.message, 'error'); render(d); }
-      });
-      d.addEventListener('click', async (e) => {
-        if (e.target.closest('[data-copy]')) { const ok = await copyText(location.href.split('#')[0] + '#/code/' + CS.id); toast(ok ? 'Link copied.' : 'Couldn’t copy the link.', ok ? '' : 'error'); return; }
-        const rm = e.target.closest('[data-rm]');
-        if (rm) {
-          const u = rm.dataset.rm;
-          try {
-            await api(`/codespaces/${CS.id}/members/${encodeURIComponent(u)}`, { method: 'DELETE' });
-            if (u === S.user.username && !CS.meta.is_owner) { close(); csLeave(); go('#/web/code'); return; }
-            patchMeta({ members: CS.meta.members.filter((x) => x.username !== u) });
-          } catch (err) { toast(err.message, 'error'); }
-          return;
-        }
-        const add = e.target.closest('[data-add]');
-        if (add) {
-          try {
-            const r = await api(`/codespaces/${CS.id}/members`, { method: 'POST', body: { username: add.dataset.add } });
-            let extra = {};
-            if (CS.meta.visibility === 'private') { const p = await api(`/codespaces/${CS.id}`, { method: 'PATCH', body: { visibility: 'shared' } }); extra = p.codespace; toast('Visibility changed to Shared.'); }
-            patchMeta({ ...extra, members: r.members }); const q = $('#cs-user-q', d); if (q) { q.value = ''; q.focus(); }
-          } catch (err) { toast(err.message, 'error'); }
-        }
-      });
-      d.addEventListener('input', debounce(async (e) => {
-        if (e.target.id !== 'cs-user-q') return;
-        const res = $('#cs-user-res', d), v = e.target.value.trim(); if (!v) { res.innerHTML = ''; return; }
+      $('#rc-name', d).focus();
+      $('[data-del]', d).addEventListener('click', async () => { close(); if (await deleteCodespace(X.id)) { X.files.forEach((f) => { f.dirty = false; }); go('#/web/codespaces'); } });
+      $('#rc-form', d).addEventListener('submit', async (ev) => {
+        ev.preventDefault();
+        const btn = $('button[type=submit]', d), body = { name: $('#rc-name', d).value.trim(), description: $('#rc-desc', d).value.trim() };
+        clearErrs(ev.currentTarget);
+        if (body.name.length < 2 || body.name.length > 60) return setErr('rc-name', 'Name must be 2–60 characters.');
+        busy(btn, true, 'Saving…');
         try {
-          const r = await api('/users?q=' + encodeURIComponent(v));
-          const have = new Set([CS.meta.owner.username, ...(CS.meta.members || []).map((x) => x.username)]);
-          const list = r.users.filter((u) => !have.has(u.username));
-          res.innerHTML = list.length ? list.map((u) => `<button type="button" class="room-item" data-add="${esc(u.username)}">${avatar(u, 28)}<span class="rname">${esc(u.display_name)} <span class="muted">@${esc(u.username)}</span></span><span class="btn sm">${icon('plus', 14)} Add</span></button>`).join('') : '<p class="muted-p">No one found.</p>';
-        } catch (err) { res.innerHTML = `<p class="muted-p">${esc(err.message)}</p>`; }
-      }, 250));
-    },
-  });
-}
-function csDetails() {
-  const m = CS.meta;
-  if (!m.is_owner) return csShare();
-  openModal({
-    title: 'Codespace details',
-    html: `<form id="cs-det" novalidate>${fieldHtml({ id: 'cs-d-title', label: 'Name', value: m.title, maxlength: 60 })}${fieldHtml({ id: 'cs-d-desc', label: 'Description', value: m.description || '', maxlength: 200, required: false })}<p class="err" id="cs-d-error" role="alert"></p>
-      <div class="modal-actions" style="justify-content:space-between"><button class="btn danger" type="button" data-del>${icon('trash', 15)} Delete</button><span style="display:flex;gap:10px"><button class="btn" type="button" data-close>Cancel</button><button class="btn primary" type="submit">Save</button></span></div></form>`,
-    onOpen: (d, close) => {
-      $('#cs-det', d).addEventListener('submit', async (e) => {
-        e.preventDefault(); clearErrs(e.target);
-        const title = $('#cs-d-title', d).value.trim(); if (!title) return setErr('cs-d-title', 'Enter a name.');
-        const btn = $('button[type=submit]', d); busy(btn, true, 'Saving…');
-        try { const r = await api(`/codespaces/${CS.id}`, { method: 'PATCH', body: { title, description: $('#cs-d-desc', d).value.trim() } }); CS.meta = { ...CS.meta, ...r.codespace }; csRenderHead(); close(); }
-        catch (err) { busy(btn, false); if (!applyServerErrors({ title: 'cs-d-title', description: 'cs-d-desc' }, err)) $('#cs-d-error', d).textContent = err.message; }
-      });
-      $('[data-del]', d).addEventListener('click', async () => {
-        close();
-        if (!(await confirmDialog('Delete this codespace and all of its files for everyone? This can’t be undone.', 'Delete codespace'))) return;
-        try { await api(`/codespaces/${CS.id}`, { method: 'DELETE' }); CS.dirty.clear(); CS.removed.clear(); csLeave(); toast('Codespace deleted.'); go('#/web/code'); }
-        catch (err) { toast(err.message, 'error'); }
+          const r = await api(`/codespaces/${encodeURIComponent(X.id)}`, { method: 'PATCH', body });
+          if (E === X) { X.meta = r.codespace; const n = $('#cs-name'); n.textContent = X.meta.name; n.title = X.meta.name; document.title = `${X.meta.name} — Webcord`; }
+          close();
+        } catch (e) { busy(btn, false); if (!applyServerErrors({ name: 'rc-name', description: 'rc-desc' }, e)) $('#rc-error', d).textContent = e.message; }
       });
     },
   });
 }
 
-/* ---------- click actions (called from app.js's global click handler) ---------- */
-function csAction(a, t) {
+function shareModal() {
+  const X = E, owner = X.role === 'owner';
+  const link = `${location.origin}${location.pathname}#/codespace/${encodeURIComponent(X.id)}`;
+  let dlg = null, closeModal = () => {};
+  const paint = () => {
+    const body = dlg && $('#sh-body', dlg); if (!body) return;
+    const m = X.meta;
+    const visOpts = owner
+      ? `<div class="opts three">${Object.entries(VIS).map(([v, o]) => `<label class="opt"><input type="radio" name="sh-vis" value="${v}" ${m.visibility === v ? 'checked' : ''}><span class="opt-in">${icon(o.icon, 18)}<b>${o.label}</b><small>${o.hint}</small></span></label>`).join('')}</div>`
+      : `<p class="vis-line">${visBadge(m.visibility)} <span>${esc((VIS[m.visibility] || VIS.private).hint)}</span></p>`;
+    const people = [{ user: m.owner, role: 'owner' }].concat(X.members);
+    const showPeople = m.visibility !== 'public' && (owner || m.visibility === 'shared');
+    body.innerHTML = `
+      <div class="sh-sec"><h3>Who can access</h3>${visOpts}${owner && m.visibility === 'public' ? '<p class="hint">Anyone on Webcord can open this codespace and edit it. It appears in everyone’s Web tab.</p>' : ''}${owner && m.visibility === 'private' ? '<p class="hint">Switching to Private removes everyone you shared it with.</p>' : ''}</div>
+      ${showPeople ? `<div class="sh-sec"><h3>People</h3>
+        ${owner ? `<form class="sh-add" id="sh-add" autocomplete="off" novalidate><div class="sh-add-row"><div class="sh-find"><input class="input" id="sh-user" placeholder="Add by username" aria-label="Username to add" maxlength="20" autocapitalize="none" spellcheck="false"><div class="sh-suggest" id="sh-suggest" hidden></div></div>
+          <select class="select" id="sh-role" aria-label="Permission"><option value="edit">Can edit</option><option value="view">Can view</option></select><button class="btn primary" type="submit">Add</button></div><p class="err" id="sh-err" role="alert"></p></form>` : ''}
+        <ul class="sh-people">${people.map((p) => `<li>${avatar(p.user, 32)}<div class="who"><b>${esc(p.user.display_name)}</b><small>@${esc(p.user.username)}</small></div>
+          ${p.role === 'owner' ? '<span class="role-tag">Owner</span>' : owner
+            ? `<select class="select sm" data-sh-role="${esc(p.user.username)}" aria-label="Permission for ${esc(p.user.username)}"><option value="edit" ${p.role === 'edit' ? 'selected' : ''}>Can edit</option><option value="view" ${p.role === 'view' ? 'selected' : ''}>Can view</option></select><button class="btn icon sm ghost" data-sh-rm="${esc(p.user.username)}" aria-label="Remove ${esc(p.user.username)}">${icon('x', 16)}</button>`
+            : p.user.id === S.user.id ? `<span class="role-tag">${p.role === 'view' ? 'Can view' : 'Can edit'}</span><button class="btn sm" data-sh-leave>Leave</button>` : `<span class="role-tag">${p.role === 'view' ? 'Can view' : 'Can edit'}</span>`}</li>`).join('')}</ul></div>` : ''}
+      <div class="sh-sec"><h3>Link</h3><div class="sh-link"><input class="input" readonly value="${esc(link)}" aria-label="Codespace link" id="sh-link"><button class="btn" data-sh-copy>${icon('copy', 15)} Copy</button></div>
+        <p class="hint">${m.visibility === 'private' ? 'Only you can open this link.' : m.visibility === 'public' ? 'Anyone signed in to Webcord can open this link.' : 'Only the people above can open this link.'}</p></div>`;
+    bindShare(body);
+  };
+  const bindShare = (body) => {
+    $$('input[name=sh-vis]', body).forEach((r) => r.addEventListener('change', async () => {
+      const v = r.value;
+      if (v === 'private' && X.members.length && !(await confirmDialog('Making this private removes everyone you shared it with. Continue?', 'Make private'))) return paint();
+      try {
+        const res = await api(`/codespaces/${encodeURIComponent(X.id)}`, { method: 'PATCH', body: { visibility: v } });
+        X.meta = res.codespace; X.members = res.members; const b = $('#cs-vis'); if (b) b.innerHTML = visBadge(X.meta.visibility);
+        if (v === 'shared') toast('Add the people you want to share it with.', '');
+      } catch (e) { toast(e.message, 'error'); }
+      paint();
+    }));
+    $('[data-sh-copy]', body)?.addEventListener('click', async (ev) => { const ok = await copyText(link); const b = ev.currentTarget; b.innerHTML = ok ? `${icon('check', 15)} Copied` : 'Press Ctrl+C'; setTimeout(() => { b.innerHTML = `${icon('copy', 15)} Copy`; }, 1500); });
+    $('[data-sh-leave]', body)?.addEventListener('click', async () => {
+      try { await api(`/codespaces/${encodeURIComponent(X.id)}/members/${encodeURIComponent(S.user.username)}`, { method: 'DELETE' }); closeModal(); toast('You left this codespace.', 'success'); go('#/web/codespaces'); } catch (e) { toast(e.message, 'error'); }
+    });
+    $$('[data-sh-rm]', body).forEach((b) => b.addEventListener('click', async () => {
+      try { const r = await api(`/codespaces/${encodeURIComponent(X.id)}/members/${encodeURIComponent(b.dataset.shRm)}`, { method: 'DELETE' }); X.members = r.members; paint(); } catch (e) { toast(e.message, 'error'); }
+    }));
+    $$('[data-sh-role]', body).forEach((s) => s.addEventListener('change', async () => {
+      try { const r = await api(`/codespaces/${encodeURIComponent(X.id)}/members`, { method: 'POST', body: { username: s.dataset.shRole, role: s.value } }); X.members = r.members; } catch (e) { toast(e.message, 'error'); paint(); }
+    }));
+    const form = $('#sh-add', body); if (!form) return;
+    const input = $('#sh-user', body), box = $('#sh-suggest', body);
+    const add = async (username) => {
+      setErr2('');
+      const name = username.trim().replace(/^@/, '');
+      if (!name) return setErr2('Enter a username.');
+      const btn = $('button[type=submit]', form); busy(btn, true);
+      try {
+        const r = await api(`/codespaces/${encodeURIComponent(X.id)}/members`, { method: 'POST', body: { username: name, role: $('#sh-role', body).value } });
+        X.meta = r.codespace; X.members = r.members; const b = $('#cs-vis'); if (b) b.innerHTML = visBadge(X.meta.visibility);
+        paint();
+      } catch (e) { busy(btn, false); setErr2(e.fields?.username || e.message); }
+    };
+    const setErr2 = (m) => { const el = $('#sh-err', body); if (el) el.textContent = m; };
+    form.addEventListener('submit', (e) => { e.preventDefault(); add(input.value); });
+    let seq = 0;
+    input.addEventListener('input', debounce(async () => {
+      const q = input.value.trim().replace(/^@/, ''); const my = ++seq;
+      if (!q) { box.hidden = true; return; }
+      try {
+        const r = await api('/users?q=' + encodeURIComponent(q), { quiet: true });
+        if (my !== seq) return;
+        const taken = new Set(X.members.map((m) => m.user.id).concat(X.meta.owner.id));
+        const list = r.users.filter((u) => !taken.has(u.id));
+        box.hidden = !list.length;
+        box.innerHTML = list.map((u) => `<button type="button" data-pick="${esc(u.username)}">${avatar(u, 24)}<span><b>${esc(u.display_name)}</b> <small>@${esc(u.username)}</small></span></button>`).join('');
+      } catch { box.hidden = true; }
+    }, 200));
+    box.addEventListener('click', (e) => { const b = e.target.closest('[data-pick]'); if (b) { box.hidden = true; input.value = b.dataset.pick; add(b.dataset.pick); } });
+  };
+  openModal({ title: owner ? 'Share & access' : 'Details', wide: true, html: '<div id="sh-body"></div>', onOpen: (d, close) => { dlg = d; closeModal = close; paint(); } });
+}
+
+async function forkCodespace() {
+  const X = E;
+  try {
+    const r = await api(`/codespaces/${encodeURIComponent(X.id)}/fork`, { method: 'POST', body: {} });
+    toast('Copied to your codespaces.', 'success'); go('#/codespace/' + encodeURIComponent(r.codespace.id));
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+/* ======================================================================
+   Event delegation for everything marked data-cs="…"
+   ====================================================================== */
+document.addEventListener('click', async (e) => {
+  const t = e.target.closest('[data-cs]'); if (!t) return;
+  const a = t.dataset.cs;
   switch (a) {
-    case 'new-codespace': newCodespaceModal(); break;
-    case 'cs-scope': CSL.scope = t.dataset.scope; try { localStorage.setItem('webcord.csScope', CSL.scope); } catch { /* */ } csRenderList(); break;
-    case 'cs-more': busy(t, true); csLoadList(false); break;
-    case 'cs-retry': csLoadList(true); break;
-    case 'cs-run': runCode(); break;
-    case 'cs-stop': csStop(); break;
-    case 'cs-open': csOpenFile(t.dataset.path); break;
-    case 'cs-close': csCloseTab(t.dataset.path); break;
-    case 'cs-new-file': csNewFile(); break;
-    case 'cs-rename': csRenameFile(t.dataset.path); break;
-    case 'cs-delete': csDeleteFile(t.dataset.path); break;
-    case 'cs-import': $('#cs-import')?.click(); break;
-    case 'cs-share': csShare(); break;
-    case 'cs-details': csDetails(); break;
-    case 'cs-seg': $('#cs').dataset.pane = t.dataset.pane; csSyncSeg(); break;
-    case 'cs-files-toggle': $('#cs').classList.toggle('files-open'); break;
-    case 'cs-view': csSetView(t.dataset.view); break;
-    case 'cs-back': csHistGo(-1); break;
-    case 'cs-forward': csHistGo(1); break;
-    case 'cs-reload': if (CS.hist[CS.hi]) csStartWeb(CS.hist[CS.hi], CS.view); else runCode(); break;
-    case 'cs-clear': csClearLogs(); break;
-    case 'cs-device':
-      CS.device = t.dataset.device; $('#cs-frame-host').dataset.device = CS.device;
-      $$('[data-action="cs-device"]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.device === CS.device))); break;
+    case 'new': newCodespaceModal(); break;
+    case 'scope': CS.scope = t.dataset.scope; $$('.chip[data-cs=scope]').forEach((c) => c.setAttribute('aria-pressed', String(c.dataset.scope === CS.scope))); loadCodespaces(true); break;
+    case 'more': busy(t, true); await loadCodespaces(false); break;
+    case 'retry-list': loadCodespaces(true); break;
+    case 'delete-cs': e.preventDefault(); if (await deleteCodespace(t.dataset.id)) { CS.items = CS.items.filter((x) => x.id !== t.dataset.id); loadCodespaces(true); } break;
     default: break;
   }
-}
+  if (!E) return;
+  switch (a) {
+    case 'run': runPreview(); break;
+    case 'share': shareModal(); break;
+    case 'rename-cs': renameCodespaceModal(); break;
+    case 'fork': forkCodespace(); break;
+    case 'open-file': openFile(t.dataset.path); break;
+    case 'close-tab': closeTab(t.dataset.path); break;
+    case 'toggle-folder': E.collapsed.has(t.dataset.path) ? E.collapsed.delete(t.dataset.path) : E.collapsed.add(t.dataset.path); renderFiles(); break;
+    case 'new-file': newFileModal(); break;
+    case 'rename-file': renameFileModal(t.dataset.path); break;
+    case 'delete-file': deleteFile(t.dataset.path); break;
+    case 'upload': {
+      const inp = document.createElement('input'); inp.type = 'file'; inp.multiple = true; inp.accept = [...CS_EXTS].map((x) => '.' + x).join(',');
+      inp.addEventListener('change', () => uploadFiles([...inp.files])); inp.click(); break;
+    }
+    case 'toggle-files': $('#cs-left').classList.toggle(window.innerWidth <= 860 ? 'files-open' : 'files-closed'); break;
+    case 'pane': setPane(t.dataset.pane); break;
+    case 'pv-back': historyGo(-1); break;
+    case 'pv-fwd': historyGo(1); break;
+    case 'toggle-console': setConsole(!E.consoleOpen); break;
+    case 'clear-console': clearLogs(); break;
+    case 'conflict-mine': resolveConflict(true); break;
+    case 'conflict-theirs': resolveConflict(false); break;
+    default: break;
+  }
+});
