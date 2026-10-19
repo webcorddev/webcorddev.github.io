@@ -584,3 +584,22 @@ dialog.modal.wide .code pre { max-height: 62vh; }
 }
 
 .cs-files.drop, .cs-editor.drop { outline: 2px dashed var(--brand); outline-offset: -4px; background-color: var(--brand-soft); }
+
+
+/* ===== attachments: audio / video / upload progress / drop target ===== */
+.media-card { width: min(380px, 100%); }
+.media-card .att-video { display: block; width: 100%; max-height: 260px; background: #000; }
+.att-audio { display: block; width: calc(100% - 24px); height: 40px; margin: 0 12px 10px; }
+.pending-att .pa-thumb { width: 34px; height: 34px; border-radius: 8px; object-fit: cover; flex: none; background: var(--soft); }
+.pending-bar { display: block; height: 4px; margin-top: 5px; border-radius: 4px; background: rgba(91, 76, 240, .18); overflow: hidden; }
+.pending-bar i { display: block; height: 100%; background: var(--brand); border-radius: 4px; transition: width .15s linear; }
+.drop-target { outline: 2px dashed var(--brand); outline-offset: -6px; background: var(--brand-soft); }
+
+/* ===== codespace assets (audio, zip, images, PDFs …) ===== */
+.ed-asset { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding: 24px 16px; text-align: center; }
+.ed-asset[hidden] { display: none; }
+.ed-asset .as-name { font-weight: 700; color: var(--ink); word-break: break-all; }
+.ed-asset .as-meta { color: var(--muted); font-size: 13px; margin-top: -8px; }
+.ed-asset img, .ed-asset video { max-width: min(100%, 560px); max-height: 52vh; border-radius: 12px; border: 1px solid var(--line); background: var(--soft); }
+.ed-asset audio { width: min(100%, 420px); }
+.ed-asset .as-acts { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
