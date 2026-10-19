@@ -40,18 +40,32 @@ function ago(ts) {
 }
 
 /* Same rules as the server (backend/worker.js → vCsPath). */
-const CS_EXTS = new Set([...TEXT_EXTS, 'svg', 'readme', 'license']);
+const CS_EXTS = new Set([...TEXT_EXTS, 'svg', 'readme', 'license', ...ASSET_EXTS]);
 function csPathError(v) {
   const s = String(v || '').trim().replace(/^\/+/, '');
   if (!s || s.length > 100 || s.endsWith('/')) return 'Enter a file name (up to 100 characters).';
   const parts = s.split('/');
   if (parts.length > 5) return 'Folders can be nested up to 4 levels deep.';
   for (const p of parts) if (!/^[A-Za-z0-9_.-]+$/.test(p) || p === '.' || p === '..') return 'Use letters, numbers, dots, dashes and underscores in names (no spaces).';
-  if (!CS_EXTS.has(fileExt(parts[parts.length - 1]))) return 'That file type isn’t supported. Use text or code files such as .html, .css, .js, .py, .json or .md.';
+  if (!CS_EXTS.has(fileExt(parts[parts.length - 1]))) return 'That file type isn’t supported. Use text/code files, images, audio, video, PDFs or .zip.';
   return '';
 }
 const csNorm = (v) => String(v || '').trim().replace(/^\/+/, '');
 const MAX_FILE_CHARS = 200000;
+
+/* Binary files (audio, zip, images, PDFs …) live on Cloudinary; the codespace stores a tiny pointer: ASSET_PREFIX + {"url","size"} (same format as the server). */
+const ASSET_PREFIX = 'webcord-asset:';
+function assetOf(f) {
+  if (!f || typeof f.content !== 'string' || !f.content.startsWith(ASSET_PREFIX)) return null;
+  try { const o = JSON.parse(f.content.slice(ASSET_PREFIX.length)); return o && typeof o.url === 'string' ? o : null; } catch { return null; }
+}
+function uniquePath(path) {
+  if (!E.files.has(path)) return path;
+  const i = path.lastIndexOf('.'), slash = path.lastIndexOf('/');
+  const stem = i > slash + 1 ? path.slice(0, i) : path, ext = i > slash + 1 ? path.slice(i) : '';
+  for (let n = 2; n < 1000; n++) if (!E.files.has(`${stem}-${n}${ext}`)) return `${stem}-${n}${ext}`;
+  return path;
+}
 
 /* ======================================================================
    Web → Codespaces tab
@@ -164,7 +178,7 @@ async function deleteCodespace(id) {
    ====================================================================== */
 const SANDBOX = 'allow-scripts allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-downloads allow-pointer-lock';
 const RUNNER_URL = 'runner.html';
-const kindOf = (p) => { const x = fileExt(p); return x === 'html' || x === 'htm' ? 'html' : x === 'py' ? 'py' : x === 'js' || x === 'mjs' ? 'js' : x === 'md' || x === 'markdown' ? 'md' : x === 'svg' ? 'svg' : 'text'; };
+const kindOf = (p) => { const x = fileExt(p); return x === 'html' || x === 'htm' ? 'html' : x === 'py' ? 'py' : x === 'js' || x === 'mjs' ? 'js' : x === 'md' || x === 'markdown' ? 'md' : x === 'svg' ? 'svg' : ASSET_EXTS.has(x) ? 'asset' : 'text'; };
 const canEdit = () => !!E && E.role !== 'view';
 
 async function renderCodespace(id, token) {
@@ -200,6 +214,7 @@ function startEditor(r) {
       <div class="cs-bar-actions">
         <label class="cs-auto" title="Re-run the preview automatically while you type"><input type="checkbox" id="cs-auto" ${X.auto ? 'checked' : ''}><span>Auto-run</span></label>
         ${X.role === 'owner' ? '' : `<button class="btn sm" data-cs="fork" title="Make your own copy">${icon('fork', 15)}<span class="hide-sm"> Duplicate</span></button>`}
+        <button class="btn sm" data-cs="zip" title="Download every file as a .zip">${icon('download', 15)}<span class="hide-sm"> Download</span></button>
         <button class="btn sm" data-cs="share">${icon('share', 15)}<span class="hide-sm"> ${X.role === 'owner' ? 'Share' : 'Details'}</span></button>
         <button class="btn primary sm" data-cs="run" title="Runs the open file. For CSS or JS inside a website it runs the page. (Ctrl/⌘ + Enter)">${icon('play', 15)} Run</button>
       </div>
@@ -216,6 +231,7 @@ function startEditor(r) {
             <div class="ed-ln" aria-hidden="true"><div id="ed-ln-in"></div></div>
             <div class="ed-main"><pre class="ed-hl" aria-hidden="true"><code id="ed-code"></code></pre><textarea class="ed-ta" id="ed-ta" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off" wrap="off" aria-label="Code editor"></textarea></div>
           </div>
+          <div class="ed-asset" id="ed-asset" hidden></div>
           <div class="ed-empty" id="ed-empty"><div>${icon('file', 28)}<p>Select a file to start editing.</p></div></div>
         </div>
       </section>
@@ -307,19 +323,30 @@ function closeTab(path) {
 }
 
 /* ---------- the code editor (a transparent <textarea> on top of a syntax-highlighted <pre>) ---------- */
-const edEl = () => ({ ta: $('#ed-ta'), code: $('#ed-code'), ln: $('#ed-ln-in'), ed: $('#ed'), empty: $('#ed-empty') });
+const edEl = () => ({ ta: $('#ed-ta'), code: $('#ed-code'), ln: $('#ed-ln-in'), ed: $('#ed'), empty: $('#ed-empty'), asset: $('#ed-asset') });
 function rememberScroll() { const { ta } = edEl(); if (E && E.active && ta) E.scroll.set(E.active, [ta.scrollTop, ta.scrollLeft, ta.selectionStart, ta.selectionEnd]); }
 function loadActiveIntoEditor() {
-  const { ta, ed, empty } = edEl(); if (!ta) return;
+  const { ta, ed, empty, asset } = edEl(); if (!ta) return;
   const f = E.active && E.files.get(E.active);
-  ed.hidden = !f; empty.hidden = !!f;
-  if (!f) return;
+  const as = assetOf(f);
+  ed.hidden = !f || !!as; empty.hidden = !!f;
+  if (asset) { asset.hidden = !as; if (as) renderAsset(asset, E.active, as); }
+  if (!f || as) return;
   ta.value = f.content; ta.readOnly = !canEdit();
   paintEditor(true);
   const s = E.scroll.get(E.active) || [0, 0, 0, 0];
   ta.scrollTop = s[0]; ta.scrollLeft = s[1]; syncScroll();
   try { ta.setSelectionRange(s[2], s[3]); } catch { /* */ }
   if (window.innerWidth > 860 && canEdit()) ta.focus({ preventScroll: true });
+}
+function renderAsset(box, path, as) {
+  const name = path.split('/').pop(), k = fileKind(name), kind = attKindOfName(name);
+  const preview = kind === 'image' ? `<img src="${esc(as.url)}" alt="${esc(name)}">`
+    : kind === 'audio' ? `<audio controls preload="none" src="${esc(as.url)}"></audio>`
+    : kind === 'video' ? `<video controls preload="metadata" playsinline src="${esc(as.url)}"></video>`
+    : fileIcon(name, 64);
+  box.innerHTML = `${preview}<div class="as-name">${esc(path)}</div><div class="as-meta">${esc(k.label)}${as.size ? ` · ${fmtSize(as.size)}` : ''}</div>
+    <div class="as-acts"><button type="button" class="btn primary sm" data-cs="download-asset" data-path="${esc(path)}">${icon('download', 15)} Download</button>${k.ext === 'pdf' ? `<a class="btn sm" href="${esc(as.url)}" target="_blank" rel="noopener">${icon('eye', 15)} Open</a>` : ''}</div>`;
 }
 function syncScroll() {
   const { ta, code, ln } = edEl(); if (!ta) return;
@@ -643,38 +670,92 @@ async function deleteFile(path) {
   } catch (e) { toast(e.message, 'error'); }
 }
 async function uploadFiles(list) {
-  const X = E; if (!canEdit()) return;
+  const X = E; if (!X || !canEdit()) return;
   let added = 0, firstPath = null;
-  if (!X) return;
   for (const file of list) {
-    const path = file.name.replace(/\s+/g, '-');
-    const err = csPathError(path);
+    if (E !== X) return;
+    const wanted = file.name.replace(/[^A-Za-z0-9_.-]+/g, '-').replace(/^-+|-+$/g, '') || 'file';
+    const err = csPathError(wanted);
     if (err) { toast(`${file.name}: ${err}`, 'error'); continue; }
-    if (file.size > MAX_FILE_CHARS * 3) { toast(`${file.name} is too large.`, 'error'); continue; }
-    if (X.files.has(path)) { toast(`${path} already exists.`, 'error'); continue; }
+    const path = uniquePath(wanted);
+    const isAsset = ASSET_EXTS.has(fileExt(path));
     try {
-      const content = (await file.text()).replace(/\r\n/g, '\n');
+      let content;
+      if (isAsset) {
+        const chk = checkUpload(file);
+        if (chk.error) { toast(chk.error, 'error'); continue; }
+        toast(`Uploading ${path}…`);
+        const url = await uploadToCloudinary(chk.file, resourceFor(chk.kind));
+        content = ASSET_PREFIX + JSON.stringify({ url, size: chk.file.size });
+      } else {
+        if (file.size > MAX_FILE_CHARS * 3) { toast(`${file.name} is too large.`, 'error'); continue; }
+        content = (await file.text()).replace(/\r\n/g, '\n');
+      }
       const r = await api(`/codespaces/${encodeURIComponent(X.id)}/files`, { method: 'PUT', body: { path, content, create: true } });
       if (E !== X) return;
       X.files.set(path, { content, saved: content, rev: r.file.rev, dirty: false, saving: false, conflict: null, by: S.user.username, error: '' });
       added++; firstPath = firstPath || path;
+      renderFiles();
     } catch (e) { toast(`${file.name}: ${e.message}`, 'error'); }
   }
   if (added && E === X) { renderFiles(); openFile(firstPath); toast(`Uploaded ${added} file${added === 1 ? '' : 's'}.`, 'success'); }
 }
 
+/* ---------- download everything as a .zip (no library: a "stored" zip is easy to write) ---------- */
+const CRC_T = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+const crc32 = (u8) => { let c = 0xFFFFFFFF; for (let i = 0; i < u8.length; i++) c = CRC_T[(c ^ u8[i]) & 255] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; };
+function makeZip(entries) {                       // entries: [{ name, data: Uint8Array }] → Blob
+  const enc = new TextEncoder(), parts = [], central = [];
+  const d = new Date(), time = (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1), date = ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
+  let offset = 0;
+  for (const e of entries) {
+    const name = enc.encode(e.name), crc = crc32(e.data), size = e.data.length;
+    const lh = new DataView(new ArrayBuffer(30));
+    lh.setUint32(0, 0x04034b50, true); lh.setUint16(4, 20, true); lh.setUint16(6, 0x0800, true); lh.setUint16(8, 0, true);
+    lh.setUint16(10, time, true); lh.setUint16(12, date, true); lh.setUint32(14, crc, true); lh.setUint32(18, size, true); lh.setUint32(22, size, true);
+    lh.setUint16(26, name.length, true); lh.setUint16(28, 0, true);
+    parts.push(lh.buffer, name, e.data);
+    const ch = new DataView(new ArrayBuffer(46));
+    ch.setUint32(0, 0x02014b50, true); ch.setUint16(4, 20, true); ch.setUint16(6, 20, true); ch.setUint16(8, 0x0800, true); ch.setUint16(10, 0, true);
+    ch.setUint16(12, time, true); ch.setUint16(14, date, true); ch.setUint32(16, crc, true); ch.setUint32(20, size, true); ch.setUint32(24, size, true);
+    ch.setUint16(28, name.length, true); ch.setUint32(42, offset, true);
+    central.push(ch.buffer, name);
+    offset += 30 + name.length + size;
+  }
+  const cdSize = central.reduce((n, b) => n + (b.byteLength ?? b.length), 0);
+  const end = new DataView(new ArrayBuffer(22));
+  end.setUint32(0, 0x06054b50, true); end.setUint16(8, entries.length, true); end.setUint16(10, entries.length, true); end.setUint32(12, cdSize, true); end.setUint32(16, offset, true);
+  return new Blob([...parts, ...central, end.buffer], { type: 'application/zip' });
+}
+async function downloadZip() {
+  const X = E; if (!X || !X.files.size) return toast('There are no files to download yet.', 'error');
+  const enc = new TextEncoder(), entries = [], missed = [];
+  for (const [path, f] of X.files) {
+    const as = assetOf(f);
+    if (!as) { entries.push({ name: path, data: enc.encode(f.content) }); continue; }
+    try { const res = await fetch(as.url); if (!res.ok) throw new Error('bad status'); entries.push({ name: path, data: new Uint8Array(await res.arrayBuffer()) }); }
+    catch { missed.push(path); }
+  }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(makeZip(entries));
+  a.download = (String(X.meta?.name || 'codespace').replace(/[^A-Za-z0-9_.-]+/g, '-').replace(/^-+|-+$/g, '') || 'codespace') + '.zip';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+  toast(missed.length ? `Downloaded, but ${missed.length} uploaded file${missed.length === 1 ? '' : 's'} couldn’t be included: ${missed.join(', ')}` : 'Downloaded all files.', missed.length ? 'error' : 'success');
+}
+
 /* ---------- running + preview ---------- */
-function filesObject() { const o = {}; for (const [p, f] of E.files) o[p] = f.content; return o; }
+function filesObject() { const o = {}; for (const [p, f] of E.files) if (!assetOf(f)) o[p] = f.content; return o; }
 function pickEntry() {
   const paths = [...E.files.keys()];
   const htmls = paths.filter((p) => kindOf(p) === 'html');
   const lastHtml = E.entry && E.files.has(E.entry) && kindOf(E.entry) === 'html' ? E.entry : E.files.has('index.html') ? 'index.html' : htmls[0];
-  const a = E.active;
+  const a = E.active && kindOf(E.active) !== 'asset' ? E.active : null;
   const k = a ? kindOf(a) : null;
   if (k === 'html' || k === 'py' || k === 'md' || k === 'svg') return a;
   if (k === 'js') return htmls.length ? lastHtml : a;
   if (htmls.length) return lastHtml;
-  return ['main.py', 'main.js', 'index.js', 'app.js', 'README.md'].find((p) => E.files.has(p)) || a || paths[0] || null;
+  return ['main.py', 'main.js', 'index.js', 'app.js', 'README.md'].find((p) => E.files.has(p)) || a || paths.find((p) => kindOf(p) !== 'asset') || null;
 }
 function runPreview(entry, opts = {}) {
   if (!E) return;
@@ -896,6 +977,8 @@ document.addEventListener('click', async (e) => {
   if (!E) return;
   switch (a) {
     case 'run': runPreview(); break;
+    case 'zip': downloadZip(); break;
+    case 'download-asset': { const f = E.files.get(t.dataset.path), as = assetOf(f); if (as) downloadAttachment({ url: as.url, name: t.dataset.path.split('/').pop() }); break; }
     case 'share': shareModal(); break;
     case 'rename-cs': renameCodespaceModal(); break;
     case 'fork': forkCodespace(); break;
