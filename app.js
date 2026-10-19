@@ -229,7 +229,7 @@ const TEXT_EXTS = new Set(('txt md markdown rst log csv tsv json jsonc json5 yam
 const IMAGE_EXTS = new Set('png jpg jpeg gif webp'.split(' '));
 const AUDIO_EXTS = new Set('mp3 wav ogg oga m4a aac flac opus weba'.split(' '));
 const VIDEO_EXTS = new Set('mp4 webm mov m4v ogv'.split(' '));
-const ARCHIVE_EXTS = new Set('zip rar 7z tar gz tgz bz2 xz'.split(' '));
+const ARCHIVE_EXTS = new Set('zip zipx rar rar4 rar5 7z tar gz gzip tgz bz2 bzip2 tbz tbz2 xz txz zst zstd tzst lz lzma tlz lzo lz4 br bro cab arj ace alz egg arc zoo lha lzh lzx sit sitx sea cpio xar wim esd swm zpaq sz sqx kgb kge kzp ash pak pakz pit hqx z01 z02 z03 z04 z05 z06 z07 z08 z09 r00 r01 r02 r03 r04 r05 r06 r07 r08 r09 001 002 003 004 005 006 007 008 009 part1 part2 part3 part4 part5 part001 part002 part003 part004 part005 iso img dmg sparseimage sparsebundle vhd vhdx vmdk vdi qcow qcow2 ova ovf apk xapk apks aab jar war ear deb rpm appimage snap flatpak pkg nsp xci cbr cbz cbt cba cb7 torrent mcaddon mcpack mcworld mcstructure mctemplate mcproject rbxl rbxlx rbxlm rbxm rbxmx rbxmxl gdlvl gdr'.split(' '));
 const DOC_EXTS = new Set('pdf doc docx xls xlsx ppt pptx odt ods odp rtf epub'.split(' '));
 const ASSET_EXTS = new Set([...IMAGE_EXTS, ...AUDIO_EXTS, ...VIDEO_EXTS, ...ARCHIVE_EXTS, ...DOC_EXTS]);   // binary files (codespace assets)
 const FILE_ACCEPT = 'image/*,audio/*,video/*,text/*,' + [...TEXT_EXTS, ...ASSET_EXTS].map((e) => '.' + e).join(',');
