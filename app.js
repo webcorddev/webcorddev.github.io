@@ -222,28 +222,63 @@ async function api(path, opts = {}) {
 }
 
 /* Upload a file straight from the browser to Cloudinary (unsigned preset) and return its https URL.
-   Images go to the "image" endpoint, text/code files to the "raw" endpoint. */
+   Images → the "image" endpoint, audio/video → "video", everything else (text, code, zip, pdf, documents) → "raw". */
 const TEXT_EXTS = new Set(('txt md markdown rst log csv tsv json jsonc json5 yaml yml toml ini cfg conf xml html htm css scss sass less ' +
   'js mjs cjs jsx ts tsx vue svelte py rb php java kt kts swift go rs c h cc cpp hpp cs m mm sh bash zsh fish ps1 bat sql graphql gql ' +
   'lua r pl dart scala hs ex exs erl clj lisp diff patch dockerfile makefile gitignore env.example').split(' '));
-const IMAGE_ACCEPT = 'image/png,image/jpeg,image/gif,image/webp';
-const FILE_ACCEPT = IMAGE_ACCEPT + ',text/*,' + [...TEXT_EXTS].map((e) => '.' + e).join(',');
-const MAX_IMAGE_BYTES = 10 * 1024 * 1024, MAX_FILE_BYTES = 2 * 1024 * 1024, MAX_PREVIEW_BYTES = 1024 * 1024;
+const IMAGE_EXTS = new Set('png jpg jpeg gif webp'.split(' '));
+const AUDIO_EXTS = new Set('mp3 wav ogg oga m4a aac flac opus weba'.split(' '));
+const VIDEO_EXTS = new Set('mp4 webm mov m4v ogv'.split(' '));
+const ARCHIVE_EXTS = new Set('zip rar 7z tar gz tgz bz2 xz'.split(' '));
+const DOC_EXTS = new Set('pdf doc docx xls xlsx ppt pptx odt ods odp rtf epub'.split(' '));
+const ASSET_EXTS = new Set([...IMAGE_EXTS, ...AUDIO_EXTS, ...VIDEO_EXTS, ...ARCHIVE_EXTS, ...DOC_EXTS]);   // binary files (codespace assets)
+const FILE_ACCEPT = 'image/*,audio/*,video/*,text/*,' + [...TEXT_EXTS, ...ASSET_EXTS].map((e) => '.' + e).join(',');
+const MB = 1024 * 1024;
+const MAX_PREVIEW_BYTES = 1 * MB;
+const SIZE_LIMITS = { image: 10 * MB, audio: 25 * MB, video: 50 * MB, archive: 10 * MB, doc: 10 * MB, text: 2 * MB };
+const KIND_NOUN = { image: 'Images', audio: 'Audio files', video: 'Videos', archive: 'Archives', doc: 'Documents', text: 'Text and code files' };
 const fileExt = (name) => { const n = String(name || '').toLowerCase(); return n.includes('.') ? n.split('.').pop() : n; };
 const isTextFile = (f) => TEXT_EXTS.has(fileExt(f.name));
-async function uploadToCloudinary(file, raw) {
-  const fd = new FormData();
-  fd.append('file', file);
-  fd.append('upload_preset', CLOUDINARY_PRESET);
-  const url = raw ? CLOUDINARY_URL.replace('/image/upload', '/raw/upload') : CLOUDINARY_URL;
-  let res;
-  try { res = await fetch(url, { method: 'POST', body: fd }); } catch { throw new ApiError(0, 'Upload failed — check your connection and try again.'); }
-  let data = null; try { data = await res.json(); } catch { /* non-JSON */ }
-  if (!res.ok || !data?.secure_url) throw new ApiError(res.status, data?.error?.message || (raw ? 'File upload failed.' : 'Image upload failed.'));
-  return data.secure_url;
+/* What kind of file is this? (by extension — browsers report wrong MIME types for zips etc.) */
+function attKindOfName(name) {
+  const x = fileExt(name);
+  return IMAGE_EXTS.has(x) ? 'image' : AUDIO_EXTS.has(x) ? 'audio' : VIDEO_EXTS.has(x) ? 'video' : ARCHIVE_EXTS.has(x) ? 'archive' : DOC_EXTS.has(x) ? 'doc' : TEXT_EXTS.has(x) ? 'text' : null;
 }
-const uploadImage = (file) => uploadToCloudinary(file, false);
-const uploadFile = (file) => uploadToCloudinary(file, true);
+const resourceFor = (kind) => (kind === 'image' ? 'image' : kind === 'audio' || kind === 'video' ? 'video' : 'raw');
+/* Returns { kind, file } for an acceptable file (fixing a missing extension on pasted images), or { error }. */
+function checkUpload(file) {
+  let kind = attKindOfName(file.name);
+  if (!kind && /^image\//.test(file.type)) {
+    const ext = ({ 'image/jpeg': 'jpg', 'image/png': 'png', 'image/gif': 'gif', 'image/webp': 'webp' })[file.type];
+    if (ext) { kind = 'image'; file = new File([file], `${(file.name || 'image').replace(/\.[^.]*$/, '') || 'image'}.${ext}`, { type: file.type }); }
+  }
+  if (!kind) return { error: `“${file.name}” can’t be uploaded. You can attach images, audio, video, zip files, PDFs/documents and text or code files.` };
+  if (!file.size) return { error: `“${file.name}” is empty.` };
+  if (file.size > SIZE_LIMITS[kind]) return { error: `${KIND_NOUN[kind]} can be at most ${SIZE_LIMITS[kind] / MB} MB (“${file.name}” is ${fmtSize(file.size)}).` };
+  return { kind, file };
+}
+/* opts: { onProgress(0..1), signal: AbortSignal }  → Promise<https url> */
+function uploadToCloudinary(file, resource, opts = {}) {
+  return new Promise((resolve, reject) => {
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('upload_preset', CLOUDINARY_PRESET);
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', CLOUDINARY_URL.replace('/image/upload', `/${resource}/upload`));
+    if (opts.onProgress) xhr.upload.onprogress = (e) => { if (e.lengthComputable) opts.onProgress(e.loaded / e.total); };
+    xhr.onload = () => {
+      let data = null; try { data = JSON.parse(xhr.responseText); } catch { /* non-JSON */ }
+      if (xhr.status >= 200 && xhr.status < 300 && data?.secure_url) return resolve(data.secure_url);
+      reject(new ApiError(xhr.status, data?.error?.message || 'Upload failed. Please try again.'));
+    };
+    xhr.onerror = () => reject(new ApiError(0, 'Upload failed — check your connection and try again.'));
+    xhr.ontimeout = () => reject(new ApiError(0, 'Upload timed out — try again.'));
+    xhr.onabort = () => reject(new ApiError(-1, 'Upload cancelled.'));
+    if (opts.signal) { if (opts.signal.aborted) return reject(new ApiError(-1, 'Upload cancelled.')); opts.signal.addEventListener('abort', () => xhr.abort(), { once: true }); }
+    xhr.send(fd);
+  });
+}
+const uploadImage = (file, opts) => uploadToCloudinary(file, 'image', opts);
 
 /* Look + labels for file attachments (icon colour by type, friendly language name). */
 const FILE_KINDS = {
@@ -256,6 +291,14 @@ const FILE_KINDS = {
   sh: ['Shell script', 'green'], bash: ['Shell script', 'green'], zsh: ['Shell script', 'green'], fish: ['Shell script', 'green'], ps1: ['PowerShell', 'blue'], bat: ['Batch file', 'slate'],
   sql: ['SQL', 'amber'], graphql: ['GraphQL', 'pink'], gql: ['GraphQL', 'pink'], diff: ['Diff', 'slate'], patch: ['Patch', 'slate'], dockerfile: ['Dockerfile', 'blue'], makefile: ['Makefile', 'slate'],
 };
+Object.assign(FILE_KINDS, {
+  zip: ['ZIP archive', 'amber'], rar: ['RAR archive', 'amber'], '7z': ['7-Zip archive', 'amber'], tar: ['TAR archive', 'amber'], gz: ['GZip archive', 'amber'], tgz: ['TAR.GZ archive', 'amber'], bz2: ['BZip2 archive', 'amber'], xz: ['XZ archive', 'amber'],
+  pdf: ['PDF document', 'red'], doc: ['Word document', 'blue'], docx: ['Word document', 'blue'], odt: ['Document', 'blue'], rtf: ['Rich text', 'blue'], epub: ['E-book', 'teal'],
+  xls: ['Spreadsheet', 'green'], xlsx: ['Spreadsheet', 'green'], ods: ['Spreadsheet', 'green'], ppt: ['Presentation', 'coral'], pptx: ['Presentation', 'coral'], odp: ['Presentation', 'coral'],
+  mp3: ['MP3 audio', 'violet'], wav: ['WAV audio', 'violet'], ogg: ['Ogg audio', 'violet'], oga: ['Ogg audio', 'violet'], m4a: ['M4A audio', 'violet'], aac: ['AAC audio', 'violet'], flac: ['FLAC audio', 'violet'], opus: ['Opus audio', 'violet'], weba: ['WebM audio', 'violet'],
+  mp4: ['MP4 video', 'pink'], webm: ['WebM video', 'pink'], mov: ['QuickTime video', 'pink'], m4v: ['MP4 video', 'pink'], ogv: ['Ogg video', 'pink'],
+  png: ['PNG image', 'teal'], jpg: ['JPEG image', 'teal'], jpeg: ['JPEG image', 'teal'], gif: ['GIF image', 'teal'], webp: ['WebP image', 'teal'], svg: ['SVG image', 'teal'],
+});
 function fileKind(name) {
   const ext = fileExt(name);
   const [label, tone] = FILE_KINDS[ext] || ['Text file', 'brand'];
@@ -795,7 +838,7 @@ async function openRoom(room, token) {
   const same = S.room && S.room.id === room.id && $('#msgs');
   if (same) { S.unread[room.id] = 0; updateUnreadBadge(); renderRoomList(); return; }
   if (S.room) S.drafts[S.room.id] = $('#msg-input')?.value || '';
-  S.room = room; S.msgs = []; S.hasMore = false; S.nextBefore = null; S.pending = null;
+  S.room = room; S.msgs = []; S.hasMore = false; S.nextBefore = null; clearPending();
   S.unread[room.id] = 0; updateUnreadBadge(); renderRoomList();
   const isDm = room.kind === 'dm';
   const title = isDm ? room.peer.display_name : `# ${room.name}`;
@@ -812,7 +855,7 @@ async function openRoom(room, token) {
         <div id="pending"></div>
         <textarea id="msg-input" rows="1" maxlength="8000" aria-label="Message" placeholder="Message ${isDm ? '@' + esc(room.peer.username) : '#' + esc(room.name)}"></textarea>
         <div class="composer-bar">
-          <label class="btn icon ghost" for="file-input" title="Attach an image, text or code file" aria-label="Attach an image, text or code file">${icon('paperclip', 19)}</label>
+          <label class="btn icon ghost" for="file-input" title="Attach a file — image, audio, video, zip, PDF, text or code (you can also paste or drop one)" aria-label="Attach a file">${icon('paperclip', 19)}</label>
           <input type="file" id="file-input" class="sr-only" tabindex="-1" accept="${esc(FILE_ACCEPT)}">
           <button type="button" class="btn icon ghost" data-action="insert-code" title="Insert code block" aria-label="Insert code block">${icon('code', 19)}</button>
           <span class="spacer"></span><span class="tip">Enter for a new line · Ctrl+Enter to send</span>
@@ -845,23 +888,33 @@ async function refreshActiveRoom() {
 
 function attachmentHtml(m) {
   const at = m.attachment;
-  if (at.is_image) return `<a href="${esc(at.url)}" target="_blank" rel="noopener"><img class="att-img" src="${esc(at.url)}" alt="${esc(at.name)}" loading="lazy" data-fb></a>`;
+  const type = at.type || (at.is_image ? 'image' : 'file');
+  if (type === 'image') return `<a href="${esc(at.url)}" target="_blank" rel="noopener"><img class="att-img" src="${esc(at.url)}" alt="${esc(at.name)}" loading="lazy" data-fb></a>`;
   const k = fileKind(at.name);
-  return `<div class="file-card"><div class="fc-top">${fileIcon(at.name)}<div class="fc-meta"><b class="fc-name" title="${esc(at.name)}">${esc(at.name)}</b><small>${esc(k.label)}${at.size ? ` · ${fmtSize(at.size)}` : ''}</small></div></div>
-    <div class="fc-actions"><button type="button" class="btn sm" data-action="view-file" data-mid="${esc(m.id)}">${icon('eye', 15)} View</button><button type="button" class="btn sm" data-action="download-file" data-mid="${esc(m.id)}">${icon('download', 15)} Download</button></div></div>`;
+  const meta = `${esc(k.label)}${at.size ? ` · ${fmtSize(at.size)}` : ''}`;
+  const top = `<div class="fc-top">${fileIcon(at.name)}<div class="fc-meta"><b class="fc-name" title="${esc(at.name)}">${esc(at.name)}</b><small>${meta}</small></div></div>`;
+  const dl = `<button type="button" class="btn sm" data-action="download-file" data-mid="${esc(m.id)}">${icon('download', 15)} Download</button>`;
+  if (type === 'video') return `<div class="file-card media-card"><video class="att-video" controls preload="metadata" playsinline src="${esc(at.url)}"></video>${top}<div class="fc-actions">${dl}</div></div>`;
+  if (type === 'audio') return `<div class="file-card media-card">${top}<audio class="att-audio" controls preload="none" src="${esc(at.url)}"></audio><div class="fc-actions">${dl}</div></div>`;
+  const view = TEXT_EXTS.has(k.ext) ? `<button type="button" class="btn sm" data-action="view-file" data-mid="${esc(m.id)}">${icon('eye', 15)} View</button>`
+    : k.ext === 'pdf' ? `<a class="btn sm" href="${esc(at.url)}" target="_blank" rel="noopener">${icon('eye', 15)} Open</a>` : '';
+  return `<div class="file-card">${top}<div class="fc-actions">${view}${dl}</div></div>`;
 }
+/* Images/audio/video can be forced to download by Cloudinary (fl_attachment); raw files download as they are. */
+const downloadUrl = (url) => (/\/(image|video)\/upload\//.test(url) ? url.replace('/upload/', '/upload/fl_attachment/') : url);
 async function downloadAttachment(at) {
+  const name = at.name || 'download';
   try {
     const res = await fetch(at.url);
     if (!res.ok) throw new Error('bad status');
     const blob = await res.blob();
     const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob); a.download = at.name;
+    a.href = URL.createObjectURL(blob); a.download = name;
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 5000);
   } catch {
     const a = document.createElement('a');
-    a.href = at.url; a.download = at.name; a.target = '_blank'; a.rel = 'noopener';
+    a.href = downloadUrl(at.url); a.download = name; a.target = '_blank'; a.rel = 'noopener';
     document.body.appendChild(a); a.click(); a.remove();
   }
 }
@@ -949,9 +1002,16 @@ function renderPending() {
   const el = $('#pending'); if (!el) return;
   const p = S.pending;
   if (!p) { el.innerHTML = ''; return; }
-  const lead = p.uploading ? '<span class="spinner"></span>' : (p.isImage ? icon('paperclip', 16) : fileIcon(p.name, 34));
-  const sub = p.uploading ? 'Uploading…' : (p.isImage ? 'Image' : fileKind(p.name).label);
-  el.innerHTML = `<div class="pending-att">${lead}<span class="n"><b>${esc(p.name)}</b><small>${p.size ? `${fmtSize(p.size)} · ` : ''}${sub}</small></span><button type="button" data-action="remove-pending" aria-label="Remove attachment">${icon('x', 16)}</button></div>`;
+  const pct = Math.round((p.progress || 0) * 100);
+  const lead = p.kind === 'image' && p.preview ? `<img class="pa-thumb" src="${esc(p.preview)}" alt="">` : p.uploading ? '<span class="spinner"></span>' : (p.kind === 'image' ? icon('paperclip', 16) : fileIcon(p.name, 34));
+  const sub = p.uploading ? `Uploading… ${pct}%` : (p.kind === 'image' ? 'Image' : fileKind(p.name).label);
+  el.innerHTML = `<div class="pending-att">${lead}<span class="n"><b>${esc(p.name)}</b><small>${p.size ? `${fmtSize(p.size)} · ` : ''}${sub}</small>${p.uploading ? `<span class="pending-bar"><i style="width:${pct}%"></i></span>` : ''}</span><button type="button" data-action="remove-pending" aria-label="${p.uploading ? 'Cancel upload' : 'Remove attachment'}" title="${p.uploading ? 'Cancel upload' : 'Remove attachment'}">${icon('x', 16)}</button></div>`;
+}
+function clearPending() {
+  const p = S.pending; if (!p) return;
+  if (p.abort) p.abort.abort();
+  if (p.preview) URL.revokeObjectURL(p.preview);
+  S.pending = null; renderPending();
 }
 function bindComposer() {
   const form = $('#composer'), ta = $('#msg-input');
@@ -962,6 +1022,15 @@ function bindComposer() {
   });
   form.addEventListener('submit', (e) => { e.preventDefault(); sendMessage(); });
   $('#file-input').addEventListener('change', onFilePicked);
+  // paste a screenshot / file straight into the box
+  ta.addEventListener('paste', (e) => { const f = e.clipboardData?.files?.[0]; if (f) { e.preventDefault(); attachFile(f); } });
+  // drag & drop a file onto the messages or the composer
+  for (const el of [$('#msgs'), form]) {
+    if (!el) continue;
+    el.addEventListener('dragover', (e) => { if ([...(e.dataTransfer?.types || [])].includes('Files')) { e.preventDefault(); el.classList.add('drop-target'); } });
+    el.addEventListener('dragleave', (e) => { if (e.target === el) el.classList.remove('drop-target'); });
+    el.addEventListener('drop', (e) => { el.classList.remove('drop-target'); const f = e.dataTransfer?.files?.[0]; if (!f) return; e.preventDefault(); attachFile(f); });
+  }
 }
 async function sendMessage() {
   const ta = $('#msg-input'); if (!ta || S.sending) return;
@@ -973,27 +1042,36 @@ async function sendMessage() {
   const roomId = S.room.id;
   try {
     const r = await api(`/rooms/${encodeURIComponent(roomId)}/messages`, { method: 'POST', body: { body, attachment: S.pending ? { url: S.pending.url, name: S.pending.name, size: S.pending.size } : undefined } });
-    if (S.room?.id === roomId) { ta.value = ''; autoGrow(ta); S.pending = null; renderPending(); addMessage(r.message, { own: true }); }
+    if (S.room?.id === roomId) { ta.value = ''; autoGrow(ta); if (S.pending?.preview) URL.revokeObjectURL(S.pending.preview); S.pending = null; renderPending(); addMessage(r.message, { own: true }); }
     delete S.drafts[roomId];
     if (S.room?.kind === 'dm') { S.dms = [S.dms.find((d) => d.id === roomId), ...S.dms.filter((d) => d.id !== roomId)].filter(Boolean); renderRoomList(); }
   } catch (e) { toast(e.message, 'error'); }
   finally { S.sending = false; btn.disabled = false; ta.focus(); }
 }
-async function onFilePicked(e) {
+function onFilePicked(e) {
   const file = e.target.files[0]; e.target.value = '';
-  if (!file) return;
-  const isImage = /^image\/(png|jpeg|gif|webp)$/.test(file.type);
-  const isText = !isImage && isTextFile(file);
-  if (!isImage && !isText) return toast('You can attach images (PNG, JPEG, GIF, WebP) or text and code files (.txt, .md, .json, .js, .py, …).', 'error');
-  if (!file.size) return toast('That file is empty.', 'error');
-  if (isImage && file.size > MAX_IMAGE_BYTES) return toast('Images can be at most 10 MB.', 'error');
-  if (isText && file.size > MAX_FILE_BYTES) return toast('Text and code files can be at most 2 MB.', 'error');
+  if (file) attachFile(file);
+}
+async function attachFile(input) {
+  if (!S.room) return;
+  if (S.pending?.uploading) return toast('Wait for the current upload to finish (or cancel it).', 'error');
+  const chk = checkUpload(input);
+  if (chk.error) return toast(chk.error, 'error');
+  const { kind, file } = chk;
   const roomId = S.room.id;
-  S.pending = { uploading: true, name: file.name, size: file.size, isImage }; renderPending();
+  const abort = new AbortController();
+  const preview = kind === 'image' ? URL.createObjectURL(file) : null;
+  const mine = { uploading: true, name: file.name, size: file.size, kind, progress: 0, abort, preview };
+  clearPending(); S.pending = mine; renderPending();
   try {
-    const url = await (isImage ? uploadImage(file) : uploadFile(file));
-    if (S.room?.id === roomId) { S.pending = { url, name: file.name, size: file.size, isImage }; renderPending(); }
-  } catch (err) { S.pending = null; renderPending(); toast(err.message, 'error'); }
+    const url = await uploadToCloudinary(file, resourceFor(kind), { signal: abort.signal, onProgress: (f) => { if (S.pending === mine) { mine.progress = f; renderPending(); } } });
+    if (S.pending !== mine) return;                         // cancelled / replaced meanwhile
+    if (S.room?.id === roomId) { S.pending = { url, name: file.name, size: file.size, kind, preview }; renderPending(); }
+    else if (preview) URL.revokeObjectURL(preview);
+  } catch (err) {
+    if (S.pending === mine) { if (preview) URL.revokeObjectURL(preview); S.pending = null; renderPending(); }
+    if (err.status !== -1) toast(err.message, 'error');
+  }
 }
 function insertCodeBlock() {
   const ta = $('#msg-input'); if (!ta) return;
@@ -1317,7 +1395,7 @@ document.addEventListener('click', async (e) => {
     case 'toggle-rooms': $('#chat')?.classList.toggle('rooms-open'); break;
     case 'load-older': loadOlder(t); break;
     case 'insert-code': insertCodeBlock(); break;
-    case 'remove-pending': S.pending = null; renderPending(); break;
+    case 'remove-pending': clearPending(); break;
     case 'delete-msg': deleteMessage(t.dataset.mid); break;
     case 'view-file': { const at = S.msgs.find((m) => m.id === t.dataset.mid)?.attachment; if (at) viewAttachment(at); break; }
     case 'download-file': { const at = S.msgs.find((m) => m.id === t.dataset.mid)?.attachment; if (at) downloadAttachment(at); break; }
