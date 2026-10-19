@@ -229,14 +229,14 @@ const TEXT_EXTS = new Set(('txt md markdown rst log csv tsv json jsonc json5 yam
 const IMAGE_EXTS = new Set('png jpg jpeg gif webp'.split(' '));
 const AUDIO_EXTS = new Set('mp3 wav ogg oga m4a aac flac opus weba'.split(' '));
 const VIDEO_EXTS = new Set('mp4 webm mov m4v ogv'.split(' '));
-const ARCHIVE_EXTS = new Set('zip zipx rar rar4 rar5 7z tar gz gzip tgz bz2 bzip2 tbz tbz2 xz txz zst zstd tzst lz lzma tlz lzo lz4 br bro cab arj ace alz egg arc zoo lha lzh lzx sit sitx sea cpio xar wim esd swm zpaq sz sqx kgb kge kzp ash pak pakz pit hqx z01 z02 z03 z04 z05 z06 z07 z08 z09 r00 r01 r02 r03 r04 r05 r06 r07 r08 r09 001 002 003 004 005 006 007 008 009 part1 part2 part3 part4 part5 part001 part002 part003 part004 part005 iso img dmg sparseimage sparsebundle vhd vhdx vmdk vdi qcow qcow2 ova ovf apk xapk apks aab jar war ear deb rpm appimage snap flatpak pkg nsp xci cbr cbz cbt cba cb7 torrent mcaddon mcpack mcworld mcstructure mctemplate mcproject rbxl rbxlx rbxlm rbxm rbxmx rbxmxl gdlvl gdr'.split(' '));
+const ARCHIVE_EXTS = new Set('zip rar 7z tar gz tgz bz2 xz'.split(' '));
 const DOC_EXTS = new Set('pdf doc docx xls xlsx ppt pptx odt ods odp rtf epub'.split(' '));
 const ASSET_EXTS = new Set([...IMAGE_EXTS, ...AUDIO_EXTS, ...VIDEO_EXTS, ...ARCHIVE_EXTS, ...DOC_EXTS]);   // binary files (codespace assets)
 const FILE_ACCEPT = 'image/*,audio/*,video/*,text/*,' + [...TEXT_EXTS, ...ASSET_EXTS].map((e) => '.' + e).join(',');
 const MB = 1024 * 1024;
 const MAX_PREVIEW_BYTES = 1 * MB;
-const SIZE_LIMITS = { image: 10 * MB, audio: 25 * MB, video: 50 * MB, archive: 10 * MB, doc: 10 * MB, text: 2 * MB };
-const KIND_NOUN = { image: 'Images', audio: 'Audio files', video: 'Videos', archive: 'Archives', doc: 'Documents', text: 'Text and code files' };
+const SIZE_LIMITS = { image: 10 * MB, audio: 25 * MB, video: 50 * MB, archive: 10 * MB, doc: 10 * MB, text: 2 * MB, other: 10 * MB };
+const KIND_NOUN = { image: 'Images', audio: 'Audio files', video: 'Videos', archive: 'Archives', doc: 'Documents', text: 'Text and code files', other: 'Files' };
 const fileExt = (name) => { const n = String(name || '').toLowerCase(); return n.includes('.') ? n.split('.').pop() : n; };
 const isTextFile = (f) => TEXT_EXTS.has(fileExt(f.name));
 /* What kind of file is this? (by extension — browsers report wrong MIME types for zips etc.) */
@@ -252,7 +252,7 @@ function checkUpload(file) {
     const ext = ({ 'image/jpeg': 'jpg', 'image/png': 'png', 'image/gif': 'gif', 'image/webp': 'webp' })[file.type];
     if (ext) { kind = 'image'; file = new File([file], `${(file.name || 'image').replace(/\.[^.]*$/, '') || 'image'}.${ext}`, { type: file.type }); }
   }
-  if (!kind) return { error: `“${file.name}” can’t be uploaded. You can attach images, audio, video, zip files, PDFs/documents and text or code files.` };
+  if (!kind) kind = 'other';                       // any other file type: uploaded as-is, shown with a Download button only
   if (!file.size) return { error: `“${file.name}” is empty.` };
   if (file.size > SIZE_LIMITS[kind]) return { error: `${KIND_NOUN[kind]} can be at most ${SIZE_LIMITS[kind] / MB} MB (“${file.name}” is ${fmtSize(file.size)}).` };
   return { kind, file };
@@ -301,7 +301,7 @@ Object.assign(FILE_KINDS, {
 });
 function fileKind(name) {
   const ext = fileExt(name);
-  const [label, tone] = FILE_KINDS[ext] || ['Text file', 'brand'];
+  const [label, tone] = FILE_KINDS[ext] || [TEXT_EXTS.has(ext) ? 'Text file' : 'File', 'brand'];
   const badge = (ext.length > 4 ? ext.slice(0, 3) : ext).toUpperCase() || 'TXT';
   return { ext, label, tone, badge, lang: hlLang(ext) };
 }
@@ -855,8 +855,8 @@ async function openRoom(room, token) {
         <div id="pending"></div>
         <textarea id="msg-input" rows="1" maxlength="8000" aria-label="Message" placeholder="Message ${isDm ? '@' + esc(room.peer.username) : '#' + esc(room.name)}"></textarea>
         <div class="composer-bar">
-          <label class="btn icon ghost" for="file-input" title="Attach a file — image, audio, video, zip, PDF, text or code (you can also paste or drop one)" aria-label="Attach a file">${icon('paperclip', 19)}</label>
-          <input type="file" id="file-input" class="sr-only" tabindex="-1" accept="${esc(FILE_ACCEPT)}">
+          <label class="btn icon ghost" for="file-input" title="Attach any file (you can also paste or drop one)" aria-label="Attach a file">${icon('paperclip', 19)}</label>
+          <input type="file" id="file-input" class="sr-only" tabindex="-1">
           <button type="button" class="btn icon ghost" data-action="insert-code" title="Insert code block" aria-label="Insert code block">${icon('code', 19)}</button>
           <span class="spacer"></span><span class="tip">Enter for a new line · Ctrl+Enter to send</span>
           <button class="btn primary sm" type="submit" id="send-btn">${icon('send', 15)} Send</button>
