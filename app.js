@@ -69,6 +69,48 @@ function avatar(u, size = 36, cls = '') {
   return `<span class="avatar ${cls}" style="${st};background:linear-gradient(135deg,${a},${b})" aria-hidden="true">${esc((u.display_name || u.username || '?').trim().charAt(0).toUpperCase())}</span>`;
 }
 
+/* ======================================================================
+   Roles (admin, verified, …) — the definitions come from the Worker (ROLES in backend/worker.js).
+   Every user object carries `roles: ['admin', ...]`; nameHtml() draws the name with the animated colours / tick / tag.
+   ====================================================================== */
+const SAFE_COLOR = /^(#[0-9a-fA-F]{3,8}|(rgb|hsl)a?\([\d\s.,%/]+\))$/;
+const roleCls = (k) => String(k).replace(/[^\w-]/g, '_');
+const isAdmin = () => !!(S.user && (S.user.roles || []).some((k) => S.roles[k]?.admin));
+async function loadRoles() {
+  try {
+    const r = await api('/roles', { quiet: true });
+    const out = {};
+    for (const [k, d] of Object.entries(r.roles || {})) {
+      out[k] = { ...d, colors: (d.colors || []).filter((c) => SAFE_COLOR.test(c)), tick: d.tick && SAFE_COLOR.test(d.tick) ? d.tick : '' };
+    }
+    S.roles = out;
+  } catch { /* names just render plainly */ }
+  let css = '';
+  for (const [k, d] of Object.entries(S.roles)) {
+    if (d.colors.length < 2) continue;
+    const c = roleCls(k), grad = [...d.colors, d.colors[0]].join(','), dur = `${Number(d.speed) || 4}s`;
+    css += `.rn-${c}{color:${d.colors[0]};background-image:linear-gradient(90deg,${grad});animation-duration:${dur}}` +
+      `.rn-${c}.rn-glow{filter:drop-shadow(0 0 5px color-mix(in srgb,${d.colors[Math.floor(d.colors.length / 2)]} 60%,transparent))}` +
+      `.rtag-${c}{background-image:linear-gradient(90deg,${grad});animation-duration:${dur}}`;
+  }
+  let el = document.getElementById('role-styles');
+  if (!el) { el = document.createElement('style'); el.id = 'role-styles'; document.head.appendChild(el); }
+  el.textContent = css;
+}
+const TICK_SVG = '<path d="M3.85 8.62a4 4 0 0 1 4.78-4.77 4 4 0 0 1 6.74 0 4 4 0 0 1 4.78 4.78 4 4 0 0 1 0 6.74 4 4 0 0 1-4.77 4.78 4 4 0 0 1-6.75 0 4 4 0 0 1-4.78-4.77 4 4 0 0 1 0-6.76Z" fill="currentColor" stroke="none"/><path d="m9 12 2 2 4-4" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>';
+/** A user's display name with their role styling. opts: { tag: false } hides the little ADMIN pill (for tight spots). */
+function nameHtml(u, opts = {}) {
+  const text = esc(opts.text ?? u.display_name);
+  const rs = (u.roles || []).map((k) => (S.roles[k] ? { key: k, ...S.roles[k] } : null)).filter(Boolean).sort((a, b) => b.priority - a.priority);
+  if (!rs.length) return text;
+  const styled = rs.find((r) => r.colors.length >= 2);
+  let h = styled ? `<span class="rn rn-${roleCls(styled.key)}${styled.glow ? ' rn-glow' : ''}">${text}</span>` : text;
+  const tick = rs.find((r) => r.tick);
+  if (tick) h += `<svg class="vtick" style="color:${tick.tick}" viewBox="0 0 24 24" role="img" aria-label="${esc(tick.label)}"><title>${esc(tick.label)}</title>${TICK_SVG}</svg>`;
+  if (opts.tag !== false) for (const r of rs) if (r.tag && r.colors.length >= 2) h += `<span class="rtag rtag-${roleCls(r.key)}" title="${esc(r.label)}">${esc(r.tag)}</span>`;
+  return h;
+}
+
 async function copyText(text) {
   try { await navigator.clipboard.writeText(text); return true; } catch {
     const ta = document.createElement('textarea');
@@ -319,7 +361,7 @@ const S = {
   room: null, msgs: [], hasMore: false, nextBefore: null, drafts: {}, pending: null, sending: false,
   wsOpen: false, syncSeq: null, delSeq: null, syncTimer: null, syncBusy: false, retry: 0,
   web: { q: '', items: [], offset: 0, hasMore: false, loading: false },
-  proj: new Map(), token: 0,
+  proj: new Map(), token: 0, roles: {}, roomsSig: null,
 };
 
 /* ======================================================================
@@ -431,6 +473,7 @@ function closeDrawers() {
 async function afterAuth(user, token) {
   if (token) setToken(token);
   S.user = user;
+  await loadRoles();
   try { localStorage.setItem('webcord.lastLogin', user.username); } catch { /* storage unavailable */ }
   startSync();
   history.replaceState(null, '', '#/chat');
@@ -715,7 +758,7 @@ function setNavCollapsed(on, save = true) {
 }
 function renderMeCard() {
   const c = $('#me-card'); if (!c || !S.user) return;
-  c.innerHTML = `<a class="me-link" href="#/profile" aria-label="Your profile" title="${esc(S.user.display_name)} (@${esc(S.user.username)})">${avatar(S.user, 40)}<div class="meta"><div class="name">${esc(S.user.display_name)}</div><div class="handle">@${esc(S.user.username)}</div><span class="status ${S.wsOpen ? 'on' : ''}" id="me-status">${S.wsOpen ? 'Online' : 'Connecting…'}</span></div></a>
+  c.innerHTML = `<a class="me-link" href="#/profile" aria-label="Your profile" title="${esc(S.user.display_name)} (@${esc(S.user.username)})">${avatar(S.user, 40)}<div class="meta"><div class="name">${nameHtml(S.user, { tag: false })}</div><div class="handle">@${esc(S.user.username)}</div><span class="status ${S.wsOpen ? 'on' : ''}" id="me-status">${S.wsOpen ? 'Online' : 'Connecting…'}</span></div></a>
     <button class="btn icon ghost" data-action="logout" aria-label="Log out" title="Log out">${icon('logout', 18)}</button>`;
 }
 function updateStatus() {
@@ -752,7 +795,7 @@ function startSync() {
   };
   S.syncTimer = setTimeout(loop, 0);
 }
-function stopSync() { clearTimeout(S.syncTimer); S.syncTimer = null; S.syncSeq = null; S.delSeq = null; S.syncBusy = false; }
+function stopSync() { clearTimeout(S.syncTimer); S.syncTimer = null; S.syncSeq = null; S.delSeq = null; S.syncBusy = false; S.roomsSig = null; }
 async function syncOnce() {
   if (S.syncBusy || !S.user) return;
   S.syncBusy = true;
@@ -764,6 +807,10 @@ async function syncOnce() {
     if (S.syncSeq != null) for (const m of r.messages) onRealtime({ event: 'message', data: { message: m } });
     if (S.syncSeq != null) for (const id of r.deleted || []) removeMessage(id);
     S.syncSeq = r.seq; S.delSeq = r.dseq ?? S.delSeq;
+    if (r.rooms_sig) {                                      // a channel / DM was created or deleted → refresh the sidebar
+      if (S.roomsSig && S.roomsSig !== r.rooms_sig && S.roomsLoaded) refreshRooms().catch(() => {});
+      S.roomsSig = r.rooms_sig;
+    }
     if (wasOffline && S.syncSeq != null && S.room && parseHash()[0] === 'chat') refreshActiveRoom();
   } catch (e) {
     if (e.status === 401) { S.syncBusy = false; return sessionExpired(); }
@@ -805,9 +852,9 @@ function roomsHtml() {
   const badge = (id) => (S.unread[id] ? `<span class="badge">${S.unread[id]}</span>` : '');
   const pub = S.rooms.map((r) => `<a class="room-item ${S.room?.id === r.id ? 'active' : ''}" href="#/chat/${r.id}" ${S.room?.id === r.id ? 'aria-current="true"' : ''}><span class="hash">#</span><span class="rname">${esc(r.name)}</span>${badge(r.id)}</a>`).join('');
   const dms = S.dms.length
-    ? S.dms.map((d) => `<a class="room-item ${S.room?.id === d.id ? 'active' : ''}" href="#/chat/${d.id}"><span class="av-wrap">${avatar(d.peer, 28)}<i class="dot ${S.online.has(d.peer.id) ? 'on' : ''}" data-uid="${d.peer.id}"></i></span><span class="rname">${esc(d.peer.display_name)}</span>${badge(d.id)}</a>`).join('')
+    ? S.dms.map((d) => `<a class="room-item ${S.room?.id === d.id ? 'active' : ''}" href="#/chat/${d.id}"><span class="av-wrap">${avatar(d.peer, 28)}<i class="dot ${S.online.has(d.peer.id) ? 'on' : ''}" data-uid="${d.peer.id}"></i></span><span class="rname">${nameHtml(d.peer, { tag: false })}</span>${badge(d.id)}</a>`).join('')
     : '<p class="muted-p">No direct messages yet. Start one with the + button.</p>';
-  return `<h3>Channels</h3>${pub}<h3>Direct messages <button class="btn icon sm ghost" data-action="new-dm" aria-label="New direct message">${icon('plus', 16)}</button></h3>${dms}`;
+  return `<h3>Channels ${isAdmin() ? `<button class="btn icon sm ghost" data-action="new-channel" aria-label="Create channel" title="Create channel (admin)">${icon('plus', 16)}</button>` : ''}</h3>${pub}<h3>Direct messages <button class="btn icon sm ghost" data-action="new-dm" aria-label="New direct message">${icon('plus', 16)}</button></h3>${dms}`;
 }
 function renderRoomList() { const el = $('#rooms'); if (el) el.innerHTML = roomsHtml(); }
 
@@ -828,7 +875,7 @@ async function renderChat(roomId, token) {
   let target = roomId && findRoom(roomId);
   if (roomId && !target && /^dm_/.test(roomId)) { try { await loadRooms(); } catch { /* */ } target = findRoom(roomId); }
   if (!target) { let last = null; try { last = localStorage.getItem('webcord.lastRoom'); } catch { /* */ } target = findRoom(last) || S.rooms[0]; }
-  if (!target) { $('#convo').innerHTML = '<div class="empty" style="margin:24px"><h3>No rooms available</h3><p>Run the D1 migration to create the default channels.</p></div>'; renderRoomList(); return; }
+  if (!target) { $('#convo').innerHTML = `<div class="empty" style="margin:24px"><h3>No channels available</h3><p>${isAdmin() ? 'Create one with the + button next to “Channels”.' : 'An admin hasn’t created any channels yet.'}</p></div>`; renderRoomList(); return; }
   if (target.id !== roomId) history.replaceState(null, '', `#/chat/${target.id}`);
   try { localStorage.setItem('webcord.lastRoom', target.id); } catch { /* */ }
   await openRoom(target, token);
@@ -847,7 +894,8 @@ async function openRoom(room, token) {
     <div class="convo-head">
       <button class="btn icon ghost rooms-toggle" data-action="toggle-rooms" aria-label="Show conversations">${icon('menu', 20)}</button>
       ${isDm ? `<span class="av-wrap">${avatar(room.peer, 36)}<i class="dot ${S.online.has(room.peer.id) ? 'on' : ''}" data-uid="${room.peer.id}"></i></span>` : ''}
-      <div style="min-width:0"><h2>${esc(title)}</h2><p>${sub}</p></div>
+      <div style="min-width:0"><h2>${isDm ? nameHtml(room.peer) : esc(title)}</h2><p>${sub}</p></div>
+      ${isAdmin() ? `<button class="btn icon ghost" style="margin-left:auto" data-action="delete-room" aria-label="Delete ${isDm ? 'conversation' : 'channel'} (admin)" title="Delete ${isDm ? 'conversation' : 'channel'} (admin)">${icon('trash', 18)}</button>` : ''}
     </div>
     <div class="msgs" id="msgs" role="log" aria-live="polite" aria-label="Messages"><div class="loading-row"><span class="spinner"></span>Loading messages…</div></div>
     <form class="composer" id="composer" autocomplete="off">
@@ -947,7 +995,8 @@ function removeMessage(id) {
 }
 async function deleteMessage(id) {
   const m = S.msgs.find((x) => x.id === id); if (!m || !S.room) return;
-  if (!(await confirmDialog('Delete this message? This can’t be undone.', 'Delete'))) return;
+  const theirs = S.user && m.author.id !== S.user.id;
+  if (!(await confirmDialog(theirs ? `Delete this message from ${m.author.display_name}? This can’t be undone.` : 'Delete this message? This can’t be undone.', 'Delete'))) return;
   const roomId = S.room.id;
   try {
     await api(`/rooms/${encodeURIComponent(roomId)}/messages/${encodeURIComponent(id)}`, { method: 'DELETE' });
@@ -962,7 +1011,8 @@ function msgHtml(m, prev) {
   const a = m.author;
   const att = m.attachment ? attachmentHtml(m) : '';
   const own = S.user && a.id === S.user.id;
-  return `<article class="msg ${grouped ? 'grouped' : ''}${own ? ' own' : ''}" data-id="${esc(m.id)}">${own ? `<button type="button" class="msg-del" data-action="delete-msg" data-mid="${esc(m.id)}" title="Delete message" aria-label="Delete message">${icon('trash', 15)}</button>` : ''}${grouped ? '<span class="msg-gutter"></span>' : `<a class="msg-av" href="#/u/${encodeURIComponent(a.username)}" tabindex="-1" aria-hidden="true">${avatar(a, 38)}</a>`}<div class="msg-main">${grouped ? '' : `<header><a class="msg-name" href="#/u/${encodeURIComponent(a.username)}">${esc(a.display_name)}</a><span class="msg-user">@${esc(a.username)}</span><time datetime="${new Date(m.created_at).toISOString()}" title="${esc(fmtFull(m.created_at))}">${fmtTime(m.created_at)}</time></header>`}${m.body ? `<div class="msg-body">${renderMessage(m.body)}</div>` : ''}${att}</div></article>`;
+  const canDel = own || isAdmin();
+  return `<article class="msg ${grouped ? 'grouped' : ''}${own ? ' own' : ''}${canDel ? ' can-del' : ''}" data-id="${esc(m.id)}">${canDel ? `<button type="button" class="msg-del" data-action="delete-msg" data-mid="${esc(m.id)}" title="Delete message" aria-label="Delete message">${icon('trash', 15)}</button>` : ''}${grouped ? '<span class="msg-gutter"></span>' : `<a class="msg-av" href="#/u/${encodeURIComponent(a.username)}" tabindex="-1" aria-hidden="true">${avatar(a, 38)}</a>`}<div class="msg-main">${grouped ? '' : `<header><a class="msg-name" href="#/u/${encodeURIComponent(a.username)}">${nameHtml(a)}</a><span class="msg-user">@${esc(a.username)}</span><time datetime="${new Date(m.created_at).toISOString()}" title="${esc(fmtFull(m.created_at))}">${fmtTime(m.created_at)}</time></header>`}${m.body ? `<div class="msg-body">${renderMessage(m.body)}</div>` : ''}${att}</div></article>`;
 }
 function renderMsgs(scrollBottom) {
   const box = $('#msgs'); if (!box) return;
@@ -1093,7 +1143,7 @@ function openNewDm() {
         const v = q.value.trim(); if (!v) { res.innerHTML = '<p class="muted-p">Type to search.</p>'; return; }
         try {
           const r = await api('/users?q=' + encodeURIComponent(v));
-          res.innerHTML = r.users.length ? r.users.map((u) => `<button class="room-item" style="border:0;background:none;text-align:left;width:100%" data-user="${esc(u.username)}">${avatar(u, 32)}<span class="rname">${esc(u.display_name)} <span style="color:var(--muted);font-weight:500">@${esc(u.username)}</span></span></button>`).join('') : '<p class="muted-p">No developers found.</p>';
+          res.innerHTML = r.users.length ? r.users.map((u) => `<button class="room-item" style="border:0;background:none;text-align:left;width:100%" data-user="${esc(u.username)}">${avatar(u, 32)}<span class="rname">${nameHtml(u, { tag: false })} <span style="color:var(--muted);font-weight:500">@${esc(u.username)}</span></span></button>`).join('') : '<p class="muted-p">No developers found.</p>';
         } catch (e) { res.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
       }, 250);
       q.addEventListener('input', run); q.focus();
@@ -1113,6 +1163,55 @@ async function startDm(username) {
   } catch (e) { toast(e.message, 'error'); }
 }
 
+/* ---- admin: channels & DMs ---- */
+async function refreshRooms() {
+  await loadRooms();
+  if (S.room && !findRoom(S.room.id)) {                    // the conversation we were looking at no longer exists
+    const gone = S.room; S.room = null; delete S.unread[gone.id]; updateUnreadBadge(); clearPending();
+    renderRoomList();
+    if (parseHash()[0] === 'chat') { toast('That conversation was deleted.'); go('#/chat'); }
+  } else renderRoomList();
+}
+async function deleteRoom() {
+  const room = S.room; if (!room || !isAdmin()) return;
+  const label = room.kind === 'dm' ? `the conversation with ${room.peer.display_name}` : `#${room.name}`;
+  if (!(await confirmDialog(`Delete ${label} and every message in it? This can’t be undone.`, 'Delete'))) return;
+  try {
+    await api(`/rooms/${encodeURIComponent(room.id)}`, { method: 'DELETE' });
+    toast('Deleted.', 'success');
+    await refreshRooms();
+  } catch (e) { toast(e.message, 'error'); }
+}
+function newChannelModal() {
+  if (!isAdmin()) return;
+  openModal({
+    title: 'Create channel',
+    html: `<form id="nc-form" novalidate><div class="form-error" id="nc-error" role="alert"></div>
+      ${fieldHtml({ id: 'nc-name', label: 'Channel name', placeholder: 'announcements', maxlength: 30, hint: 'Lowercase letters, numbers and dashes.' })}
+      ${fieldHtml({ id: 'nc-desc', label: 'Description (optional)', placeholder: 'What is this channel for?', maxlength: 120, required: false })}
+      <div class="modal-actions"><button type="button" class="btn" data-close>Cancel</button><button class="btn primary" type="submit">Create channel</button></div></form>`,
+    onOpen: (d, close) => {
+      $('#nc-name', d).focus();
+      $('#nc-form', d).addEventListener('submit', async (ev) => {
+        ev.preventDefault();
+        const form = ev.currentTarget, btn = $('button[type=submit]', form);
+        clearErrs(form); $('#nc-error', d).textContent = '';
+        const body = { name: $('#nc-name', d).value.trim(), description: $('#nc-desc', d).value.trim() };
+        if (!body.name) return setErr('nc-name', 'Enter a channel name.');
+        busy(btn, true, 'Creating…');
+        try {
+          const r = await api('/rooms', { method: 'POST', body });
+          close(); toast('Channel created.', 'success');
+          await loadRooms(); renderRoomList(); go('#/chat/' + r.room.id);
+        } catch (err) {
+          busy(btn, false);
+          if (!applyServerErrors({ name: 'nc-name', description: 'nc-desc' }, err)) $('#nc-error', d).textContent = err.message;
+        }
+      });
+    },
+  });
+}
+
 /* ======================================================================
    Web (project showcase)
    ====================================================================== */
@@ -1124,8 +1223,8 @@ function projectCard(p) {
   return `<article class="card proj" data-pid="${esc(p.id)}">
     <div class="thumb"><div class="thumb-fb" style="background:linear-gradient(135deg,${a},${b})">${esc(p.title.charAt(0).toUpperCase())}<small>${esc(host)}</small></div>${p.preview_url ? `<img src="${esc(p.preview_url)}" alt="Preview of ${esc(p.title)}" loading="lazy" referrerpolicy="no-referrer" data-fb>` : ''}</div>
     <div class="proj-body"><h3>${esc(p.title)}</h3><p>${esc(p.description)}</p><div class="proj-url" title="${esc(p.url)}">${esc(p.url)}</div>
-      <div class="proj-foot"><a class="creator" href="#/u/${encodeURIComponent(p.creator.username)}">${avatar(p.creator, 26)}<span>${esc(p.creator.display_name)}</span></a>
-      <span class="proj-actions">${mine ? `<button class="btn icon sm ghost" data-action="edit-project" data-id="${esc(p.id)}" aria-label="Edit ${esc(p.title)}">${icon('edit', 16)}</button><button class="btn icon sm ghost" data-action="delete-project" data-id="${esc(p.id)}" aria-label="Delete ${esc(p.title)}">${icon('trash', 16)}</button>` : ''}
+      <div class="proj-foot"><a class="creator" href="#/u/${encodeURIComponent(p.creator.username)}">${avatar(p.creator, 26)}<span>${nameHtml(p.creator, { tag: false })}</span></a>
+      <span class="proj-actions">${mine ? `<button class="btn icon sm ghost" data-action="edit-project" data-id="${esc(p.id)}" aria-label="Edit ${esc(p.title)}">${icon('edit', 16)}</button>` : ''}${mine || isAdmin() ? `<button class="btn icon sm ghost" data-action="delete-project" data-id="${esc(p.id)}" aria-label="Delete ${esc(p.title)}">${icon('trash', 16)}</button>` : ''}
       <a class="btn sm" href="${esc(p.url)}" target="_blank" rel="noopener noreferrer nofollow">${icon('external', 14)} Visit</a></span></div></div></article>`;
 }
 
@@ -1229,7 +1328,7 @@ async function renderProfile(username, isSelf, token) {
   setMain(`<div class="page">
     <div class="card" style="border-radius:20px;overflow:hidden"><div class="profile-banner"></div>
       <div class="profile-card"><div class="profile-top">${avatar(u, 96)}
-        <div class="profile-id"><h1>${esc(u.display_name)}</h1><div class="handle">@${esc(u.username)} ${S.online.has(u.id) || isSelf && S.wsOpen ? '<span class="status on" style="margin-left:6px">Online</span>' : ''}</div></div>
+        <div class="profile-id"><h1>${nameHtml(u)}</h1><div class="handle">@${esc(u.username)} ${S.online.has(u.id) || isSelf && S.wsOpen ? '<span class="status on" style="margin-left:6px">Online</span>' : ''}</div></div>
         ${isSelf ? `<button class="btn" data-action="edit-profile">${icon('edit', 16)} Edit profile</button>` : `<button class="btn primary" data-action="message-user" data-username="${esc(u.username)}">${icon('chat', 16)} Message</button>`}
       </div>
       ${u.bio ? `<p class="profile-bio">${esc(u.bio)}</p>` : `<p class="profile-bio" style="color:var(--muted)">${isSelf ? 'You haven’t written a bio yet.' : 'No bio yet.'}</p>`}
@@ -1401,6 +1500,8 @@ document.addEventListener('click', async (e) => {
     case 'download-file': { const at = S.msgs.find((m) => m.id === t.dataset.mid)?.attachment; if (at) downloadAttachment(at); break; }
     case 'toggle-collapse': setNavCollapsed(!$('#shell').classList.contains('collapsed')); break;
     case 'new-dm': openNewDm(); break;
+    case 'new-channel': newChannelModal(); break;
+    case 'delete-room': deleteRoom(); break;
     case 'retry-chat': S.roomsLoaded = false; route(); break;
     case 'retry-room': { const r = S.room; S.room = null; if (r) openRoom(r, S.token); break; }
     case 'new-project': projectModal(null); break;
@@ -1426,7 +1527,7 @@ document.addEventListener('error', (e) => {
    ====================================================================== */
 (async function boot() {
   try {
-    const r = await api('/me', { quiet: true });
+    const [r] = await Promise.all([api('/me', { quiet: true }), loadRoles()]);
     S.user = r.user;
     startSync();
   } catch (e) {
