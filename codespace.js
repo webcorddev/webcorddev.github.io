@@ -82,7 +82,7 @@ function renderCodespaceList() {
       <button class="btn primary" data-cs="new">${icon('plus', 17)} New codespace</button></div>
     ${webTabs('codespaces')}
     <div class="toolbar"><div class="search">${icon('search')}<input class="input" id="cs-search" type="search" placeholder="Search codespaces" aria-label="Search codespaces" value="${esc(CS.q)}"></div>
-      <div class="chips" role="group" aria-label="Filter codespaces">${[['all', 'All'], ['mine', 'Mine'], ['shared', 'Shared with me'], ['public', 'Public']]
+      <div class="chips" role="group" aria-label="Filter codespaces">${[['all', 'All'], ['mine', 'Mine'], ['shared', 'Shared with me'], ['public', 'Public']].concat(isAdmin() ? [['moderate', 'Moderate (admin)']] : [])
         .map(([k, l]) => `<button type="button" class="chip" data-cs="scope" data-scope="${k}" aria-pressed="${CS.scope === k}">${l}</button>`).join('')}</div></div>
     <div id="cs-results"></div></div>`);
   $('#cs-search').addEventListener('input', debounce((e) => { CS.q = e.target.value.trim(); loadCodespaces(true); }, 300));
@@ -95,16 +95,18 @@ function csCard(cs) {
   const names = cs.file_names.slice(0, 4);
   const mine = cs.role === 'owner';
   const roleTag = mine ? '' : cs.visibility === 'public' ? '' : `<span class="role-tag">${cs.role === 'view' ? 'View only' : 'Can edit'}</span>`;
+  const canOpen = !!cs.role;                              // admins can see (and delete) private codespaces they can't open
+  const canDelete = mine || isAdmin();
   return `<article class="card cs-card" data-csid="${esc(cs.id)}">
-    <a class="cs-card-main" href="#/codespace/${encodeURIComponent(cs.id)}" aria-label="Open ${esc(cs.name)}">
+    <${canOpen ? `a class="cs-card-main" href="#/codespace/${encodeURIComponent(cs.id)}" aria-label="Open ${esc(cs.name)}"` : 'div class="cs-card-main"'}>
       <div class="cs-thumb" style="--a:${a};--b:${b}"><div class="cs-win"><div class="cs-win-bar"><i></i><i></i><i></i></div>
         ${names.length ? names.map((n) => { const k = fileKind(n); return `<div class="cs-win-row"><span class="cs-ext tone-${k.tone}">${esc(k.badge)}</span><span>${esc(n)}</span></div>`; }).join('') : '<div class="cs-win-row"><span class="dim">No files yet</span></div>'}
         ${cs.file_count > names.length ? `<div class="cs-win-row more">+ ${cs.file_count - names.length} more</div>` : ''}</div></div>
       <div class="proj-body"><div class="cs-card-top"><h3>${esc(cs.name)}</h3>${visBadge(cs.visibility)}</div>
         <p>${cs.description ? esc(cs.description) : '<span class="muted-p">No description</span>'}</p>
-        <div class="cs-meta"><span>${icon('file', 13)} ${cs.file_count} file${cs.file_count === 1 ? '' : 's'}</span>${cs.visibility === 'shared' && cs.member_count ? `<span>${icon('users', 13)} ${cs.member_count + 1}</span>` : ''}<span>Updated ${esc(ago(cs.updated_at))}</span>${roleTag}</div></div></a>
-    <div class="proj-foot"><a class="creator" href="#/u/${encodeURIComponent(cs.owner.username)}">${avatar(cs.owner, 26)}<span>${esc(cs.owner.display_name)}</span></a>
-      <span class="proj-actions">${mine ? `<button class="btn icon sm ghost" data-cs="delete-cs" data-id="${esc(cs.id)}" aria-label="Delete ${esc(cs.name)}">${icon('trash', 16)}</button>` : ''}<a class="btn sm" href="#/codespace/${encodeURIComponent(cs.id)}">${icon('code', 14)} Open</a></span></div></article>`;
+        <div class="cs-meta"><span>${icon('file', 13)} ${cs.file_count} file${cs.file_count === 1 ? '' : 's'}</span>${cs.visibility === 'shared' && cs.member_count ? `<span>${icon('users', 13)} ${cs.member_count + 1}</span>` : ''}<span>Updated ${esc(ago(cs.updated_at))}</span>${roleTag}</div></div></${canOpen ? 'a' : 'div'}>
+    <div class="proj-foot"><a class="creator" href="#/u/${encodeURIComponent(cs.owner.username)}">${avatar(cs.owner, 26)}<span>${nameHtml(cs.owner, { tag: false })}</span></a>
+      <span class="proj-actions">${canDelete ? `<button class="btn icon sm ghost" data-cs="delete-cs" data-id="${esc(cs.id)}" aria-label="Delete ${esc(cs.name)}">${icon('trash', 16)}</button>` : ''}${canOpen ? `<a class="btn sm" href="#/codespace/${encodeURIComponent(cs.id)}">${icon('code', 14)} Open</a>` : '<span class="role-tag">Private</span>'}</span></div></article>`;
 }
 
 async function loadCodespaces(reset) {
@@ -890,7 +892,7 @@ function shareModal() {
       ${showPeople ? `<div class="sh-sec"><h3>People</h3>
         ${owner ? `<form class="sh-add" id="sh-add" autocomplete="off" novalidate><div class="sh-add-row"><div class="sh-find"><input class="input" id="sh-user" placeholder="Add by username" aria-label="Username to add" maxlength="20" autocapitalize="none" spellcheck="false"><div class="sh-suggest" id="sh-suggest" hidden></div></div>
           <select class="select" id="sh-role" aria-label="Permission"><option value="edit">Can edit</option><option value="view">Can view</option></select><button class="btn primary" type="submit">Add</button></div><p class="err" id="sh-err" role="alert"></p></form>` : ''}
-        <ul class="sh-people">${people.map((p) => `<li>${avatar(p.user, 32)}<div class="who"><b>${esc(p.user.display_name)}</b><small>@${esc(p.user.username)}</small></div>
+        <ul class="sh-people">${people.map((p) => `<li>${avatar(p.user, 32)}<div class="who"><b>${nameHtml(p.user, { tag: false })}</b><small>@${esc(p.user.username)}</small></div>
           ${p.role === 'owner' ? '<span class="role-tag">Owner</span>' : owner
             ? `<select class="select sm" data-sh-role="${esc(p.user.username)}" aria-label="Permission for ${esc(p.user.username)}"><option value="edit" ${p.role === 'edit' ? 'selected' : ''}>Can edit</option><option value="view" ${p.role === 'view' ? 'selected' : ''}>Can view</option></select><button class="btn icon sm ghost" data-sh-rm="${esc(p.user.username)}" aria-label="Remove ${esc(p.user.username)}">${icon('x', 16)}</button>`
             : p.user.id === S.user.id ? `<span class="role-tag">${p.role === 'view' ? 'Can view' : 'Can edit'}</span><button class="btn sm" data-sh-leave>Leave</button>` : `<span class="role-tag">${p.role === 'view' ? 'Can view' : 'Can edit'}</span>`}</li>`).join('')}</ul></div>` : ''}
@@ -944,7 +946,7 @@ function shareModal() {
         const taken = new Set(X.members.map((m) => m.user.id).concat(X.meta.owner.id));
         const list = r.users.filter((u) => !taken.has(u.id));
         box.hidden = !list.length;
-        box.innerHTML = list.map((u) => `<button type="button" data-pick="${esc(u.username)}">${avatar(u, 24)}<span><b>${esc(u.display_name)}</b> <small>@${esc(u.username)}</small></span></button>`).join('');
+        box.innerHTML = list.map((u) => `<button type="button" data-pick="${esc(u.username)}">${avatar(u, 24)}<span><b>${nameHtml(u, { tag: false })}</b> <small>@${esc(u.username)}</small></span></button>`).join('');
       } catch { box.hidden = true; }
     }, 200));
     box.addEventListener('click', (e) => { const b = e.target.closest('[data-pick]'); if (b) { box.hidden = true; input.value = b.dataset.pick; add(b.dataset.pick); } });
