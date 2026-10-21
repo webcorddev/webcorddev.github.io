@@ -11,7 +11,7 @@ Object.assign(ICONS, {
 });
 
 const AG_MAX_STEPS = 14;                 // model turns per request
-const AG_BUDGET_CHARS = 17000;           // keep the conversation small: the free plan allows ~8K tokens per minute
+const AG_BUDGET_CHARS = 11000;           // keep the conversation small: the free plan allows ~8K tokens per minute
 const AG_READ_LINES = 250;
 const AG_STUB = '(older tool output removed to save space — call read_file again if you need it)';
 const AG_IDEAS = ['Explain what this project does', 'Add a dark-mode toggle', 'Find and fix bugs in the open file', 'Create a CSS file and link it from index.html'];
@@ -139,7 +139,7 @@ async function agCall(X, msgs, signal) {
       return await api(`/codespaces/${encodeURIComponent(X.id)}/agent`, { method: 'POST', body: { messages: agCompact(msgs), context: ctx }, quiet: true });
     } catch (e) {
       const wait = e.status === 429 ? Number(e.data?.retry_after) || 10 : 0;
-      if (!wait || wait > 40 || attempt >= 2) throw e;
+      if (!wait || wait > 65 || attempt >= 4) throw e;
       for (let s = wait; s > 0; s--) { agSt(X).status = `The free AI quota is busy — retrying in ${s}s…`; agRender(); await agSleep(1000, signal); }
       agSt(X).status = '';
     }
@@ -181,6 +181,11 @@ async function agRun(text) {
   } catch (e) {
     if (e && e.name === 'AbortError') turn.error = 'Stopped.';
     else turn.error = e && e.message ? e.message : 'Something went wrong.';
+    if (turn.acts.some((a) => a.status === 'ok' && a.kind !== 'read_file')) {      // keep what was done; tell the model so "continue" works
+      turn.error += ' Your earlier edits were kept — send “continue” to finish.';
+      st.history.push({ role: 'user', content: text }, { role: 'assistant', content: `I was interrupted by an error. Done so far: ${turn.acts.filter((a) => a.status === 'ok').map((a) => a.label).join('; ')}. Remaining work is not finished.`.slice(0, 1500) });
+      while (st.history.length > 10) st.history.shift();
+    }
     if (turn.error && e && e.status === 401) sessionExpired();
   } finally {
     st.running = false; st.abort = null; st.status = '';
