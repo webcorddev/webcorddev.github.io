@@ -70,17 +70,10 @@ function uniquePath(path) {
 /* ======================================================================
    Web → Codespaces tab
    ====================================================================== */
-function webTabs(active) {
-  return `<div class="web-tabs" role="tablist" aria-label="Web sections">
-    <a role="tab" href="#/web" aria-selected="${active === 'sites'}">${icon('globe', 16)} Websites</a>
-    <a role="tab" href="#/web/codespaces" aria-selected="${active === 'codespaces'}">${icon('code', 16)} Codespaces <i class="new-tag">New</i></a></div>`;
-}
-
 function renderCodespaceList() {
   setMain(`<div class="page">
     <div class="page-head"><div><h1>Web</h1><p>Write and run code together — codespaces you own, share, or find from the community.</p></div>
       <button class="btn primary" data-cs="new">${icon('plus', 17)} New codespace</button></div>
-    ${webTabs('codespaces')}
     <div class="toolbar"><div class="search">${icon('search')}<input class="input" id="cs-search" type="search" placeholder="Search codespaces" aria-label="Search codespaces" value="${esc(CS.q)}"></div>
       <div class="chips" role="group" aria-label="Filter codespaces">${[['all', 'All'], ['mine', 'Mine'], ['shared', 'Shared with me'], ['public', 'Public']].concat(isAdmin() ? [['moderate', 'Moderate (admin)']] : [])
         .map(([k, l]) => `<button type="button" class="chip" data-cs="scope" data-scope="${k}" aria-pressed="${CS.scope === k}">${l}</button>`).join('')}</div></div>
@@ -214,6 +207,7 @@ function startEditor(r) {
       <div class="cs-title"><div class="cs-name"><b id="cs-name" title="${esc(X.meta.name)}">${esc(X.meta.name)}</b>${X.role === 'owner' ? `<button class="btn icon sm ghost" data-cs="rename-cs" aria-label="Rename codespace" title="Rename">${icon('edit', 14)}</button>` : ''}<span id="cs-vis">${visBadge(X.meta.visibility)}</span></div>
         <small id="cs-save" class="cs-save"></small></div>
       <div class="cs-bar-actions">
+        ${canEdit() ? `<button type="button" class="btn sm agent-btn" id="cs-agent-btn" data-cs="agent" aria-pressed="false" title="Ask the AI agent to edit your code">${icon('sparkles', 15)}<span class="hide-sm"> Agent</span></button>` : ''}
         <label class="cs-auto" title="Re-run the preview automatically while you type"><input type="checkbox" id="cs-auto" ${X.auto ? 'checked' : ''}><span>Auto-run</span></label>
         ${X.role === 'owner' ? '' : `<button class="btn sm" data-cs="fork" title="Make your own copy">${icon('fork', 15)}<span class="hide-sm"> Duplicate</span></button>`}
         <button class="btn sm" data-cs="zip" title="Download every file as a .zip">${icon('download', 15)}<span class="hide-sm"> Download</span></button>
@@ -249,11 +243,13 @@ function startEditor(r) {
         <div class="pv-stage" id="pv-stage"><div class="pv-empty"><div class="em-ico">${icon('play', 22)}</div><h3>Preview</h3><p>Press <b>Run</b> to see your website or code output here.</p></div></div>
         <div class="pv-console" id="pv-console" hidden><div class="pv-console-head"><b>Console</b><button class="btn sm ghost" data-cs="clear-console">Clear</button></div><div class="pv-logs" id="pv-logs" role="log" aria-live="polite"></div></div>
       </section>
+      ${canEdit() ? agPanelHtml() : ''}
     </div></div>`, true);
   renderFiles(); renderTabs(); updateSaveStatus(); updateHistoryButtons();
   const first = ['index.html', 'main.py', 'main.js', 'README.md'].find((p) => files.has(p)) || [...files.keys()].sort()[0];
   if (first) openFile(first);
   bindEditor(m);
+  if (canEdit()) agBind();
   pollLoop(X);
   const pick = pickEntry();
   if (pick && kindOf(pick) === 'html') runPreview(pick, { quiet: true });
@@ -262,6 +258,7 @@ function startEditor(r) {
 function csLeave() {
   const X = E; if (!X) return;
   X.dead = true; E = null;
+  try { X.agent?.abort?.abort(); } catch { /* */ }
   clearTimeout(X.pollTimer); clearTimeout(X.hlTimer); clearTimeout(X.autoTimer);
   X.timers.forEach((t) => clearTimeout(t));
   for (const p of X.files.keys()) saveFile(X, p);       // flush anything still unsaved (the request keeps going after we leave)
@@ -981,6 +978,7 @@ document.addEventListener('click', async (e) => {
     case 'run': runPreview(); break;
     case 'zip': downloadZip(); break;
     case 'download-asset': { const f = E.files.get(t.dataset.path), as = assetOf(f); if (as) downloadAttachment({ url: as.url, name: t.dataset.path.split('/').pop() }); break; }
+    case 'agent': agToggle(); break;
     case 'share': shareModal(); break;
     case 'rename-cs': renameCodespaceModal(); break;
     case 'fork': forkCodespace(); break;
