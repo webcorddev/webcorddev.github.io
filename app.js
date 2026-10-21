@@ -454,7 +454,7 @@ async function route() {
   setActiveNav(sec === 'u' || sec === 'codespace' ? 'web' : sec);
   const token = ++S.token;
   if (sec === 'chat') return renderChat(arg, token);
-  if (sec === 'web') return arg === 'codespaces' ? renderCodespaceList() : renderWeb();
+  if (sec === 'web') return renderCodespaceList();          // Web = codespaces only; websites live on profiles
   if (sec === 'codespace') return renderCodespace(arg, token);
   if (sec === 'profile') return renderProfile(S.user.username, true, token);
   if (sec === 'u') return renderProfile(arg, arg && arg.toLowerCase() === S.user.username.toLowerCase(), token);
@@ -541,7 +541,7 @@ function renderWelcome() {
           </div>
           <div class="mock-input"><span>Message #general</span><span style="color:var(--brand)">${icon('send', 18)}</span></div>
         </div>
-        <div class="float-card float-proj"><div class="thumb-art" style="background:linear-gradient(135deg,#6d5dfc,#c084fc)"></div><div class="pad"><b>Your project here</b><span style="color:var(--muted)">Share it in Web and get discovered</span></div></div>
+        <div class="float-card float-proj"><div class="thumb-art" style="background:linear-gradient(135deg,#6d5dfc,#c084fc)"></div><div class="pad"><b>Your project here</b><span style="color:var(--muted)">Add it to your profile and get discovered</span></div></div>
       </div>
     </div></section>
 
@@ -553,7 +553,7 @@ function renderWelcome() {
           ['chat', 'Developer chat', 'Public rooms and direct messages with real-time delivery and full message history.', '#6d5dfc,#8b5cf6'],
           ['code', 'Code sharing', 'Fenced code blocks with syntax highlighting, language labels and a one-click Copy button.', '#ec4899,#f97316'],
           ['paperclip', 'File sharing', 'Drop images and files straight into a conversation. Access is limited to room members.', '#0ea5e9,#6366f1'],
-          ['globe', 'Website discovery', 'Submit what you built, browse projects from other devs and jump to their profiles.', '#10b981,#06b6d4'],
+          ['globe', 'Website showcase', 'Add the sites you built to your profile and browse what other devs have shipped.', '#10b981,#06b6d4'],
           ['terminal', 'Codespaces', 'Write HTML, CSS, JS and Python in the browser, run it live, and share it privately or with the world.', '#f59e0b,#ef4444'],
         ].map(([ic, t, d, g]) => `<article class="feat reveal"><div class="fi" style="background:linear-gradient(135deg,${g.split(',')[0]},${g.split(',')[1]})">${icon(ic, 22)}</div><h3>${t}</h3><p>${d}</p></article>`).join('')}
       </div>
@@ -577,7 +577,7 @@ function renderWelcome() {
 
     <section class="section" id="showcase">
       <h2 class="reveal">Discover sites built by <span class="br">devs</span></h2>
-      <p class="sub reveal">The Web tab is a living gallery of projects from the community.</p>
+      <p class="sub reveal">Every profile has a showcase of the websites that developer built.</p>
       <span class="sample-note">Preview — sample cards, not real projects</span>
       <div class="gallery">
         ${[['Portfolio site', 'A fast, minimal developer portfolio.', '#6d5dfc,#c084fc'], ['Docs starter', 'Documentation theme with search.', '#0ea5e9,#6366f1'], ['Tiny dashboard', 'Self-hosted metrics in one page.', '#f97316,#ec4899']].map(([t, d, g]) => `
@@ -1213,7 +1213,7 @@ function newChannelModal() {
 }
 
 /* ======================================================================
-   Web (project showcase)
+   Websites (project cards — shown on profiles, added from your own profile)
    ====================================================================== */
 function projectCard(p) {
   S.proj.set(p.id, p);
@@ -1228,45 +1228,16 @@ function projectCard(p) {
       <a class="btn sm" href="${esc(p.url)}" target="_blank" rel="noopener noreferrer nofollow">${icon('external', 14)} Visit</a></span></div></div></article>`;
 }
 
-function renderWeb() {
-  setMain(`<div class="page">
-    <div class="page-head"><div><h1>Web</h1><p>Websites and codespaces built by developers in the Webcord community.</p></div><button class="btn primary" data-action="new-project">${icon('plus', 17)} Submit project</button></div>
-    ${webTabs('sites')}
-    <div class="toolbar"><div class="search">${icon('search')}<input class="input" id="proj-search" type="search" placeholder="Search projects by title or description" aria-label="Search projects" value="${esc(S.web.q)}"></div></div>
-    <div id="proj-results"></div></div>`);
-  $('#proj-search').addEventListener('input', debounce((e) => { S.web.q = e.target.value.trim(); loadProjects(true); }, 300));
-  loadProjects(true);
-}
-async function loadProjects(reset) {
-  const box = $('#proj-results'); if (!box) return;
-  const w = S.web;
-  if (reset) { w.offset = 0; w.items = []; box.innerHTML = '<div class="loading-row"><span class="spinner"></span>Loading projects…</div>'; }
-  const mySeq = (w.seq = (w.seq || 0) + 1);
-  try {
-    const r = await api(`/projects?limit=24&offset=${w.offset}${w.q ? '&q=' + encodeURIComponent(w.q) : ''}`);
-    if (mySeq !== w.seq || !$('#proj-results')) return;
-    w.items = w.items.concat(r.projects); w.offset = w.items.length; w.hasMore = r.has_more;
-    if (!w.items.length) {
-      box.innerHTML = `<div class="empty"><div class="em-ico">${icon('globe', 24)}</div><h3>${w.q ? 'No projects match your search' : 'No projects yet'}</h3><p>${w.q ? 'Try a different keyword.' : 'Be the first to share something you built.'}</p>${w.q ? '' : `<button class="btn primary" data-action="new-project">${icon('plus', 16)} Submit project</button>`}</div>`;
-      return;
-    }
-    box.innerHTML = `<div class="grid">${w.items.map(projectCard).join('')}</div>${w.hasMore ? '<div style="text-align:center;margin-top:22px"><button class="btn" data-action="more-projects">Load more</button></div>' : ''}`;
-  } catch (e) {
-    if (mySeq !== w.seq) return;
-    box.innerHTML = `<div class="empty"><h3>Couldn’t load projects</h3><p>${esc(e.message)}</p><button class="btn primary" data-action="retry-projects">Try again</button></div>`;
-  }
-}
-
 function projectModal(existing) {
   const e = existing || {};
   openModal({
-    title: existing ? 'Edit project' : 'Submit a project',
+    title: existing ? 'Edit website' : 'Add a website',
     html: `<form id="proj-form" novalidate><div class="form-error" id="pf-error" role="alert"></div>
       ${fieldHtml({ id: 'pf-title', label: 'Title', placeholder: 'My awesome site', maxlength: 80, value: e.title || '' })}
       ${fieldHtml({ id: 'pf-desc', label: 'Description', textarea: true, placeholder: 'What is it and what did you build it with?', maxlength: 500, value: e.description || '', hint: '10–500 characters.' })}
       ${fieldHtml({ id: 'pf-url', label: 'Website URL', type: 'url', placeholder: 'https://example.com', maxlength: 300, value: e.url || '' })}
       ${fieldHtml({ id: 'pf-prev', label: 'Preview image URL (optional)', type: 'url', placeholder: 'https://example.com/preview.png', maxlength: 300, value: e.preview_url || '', required: false, hint: 'A direct link to a screenshot. If it can’t load, a placeholder is shown.' })}
-      <div class="modal-actions"><button type="button" class="btn" data-close>Cancel</button><button class="btn primary" type="submit">${existing ? 'Save changes' : 'Submit project'}</button></div></form>`,
+      <div class="modal-actions"><button type="button" class="btn" data-close>Cancel</button><button class="btn primary" type="submit">${existing ? 'Save changes' : 'Add website'}</button></div></form>`,
     onOpen: (d, close) => {
       $('#pf-title', d).focus();
       $('#proj-form', d).addEventListener('submit', async (ev) => {
@@ -1281,11 +1252,11 @@ function projectModal(existing) {
         };
         let bad = false; for (const [id, m] of Object.entries(errs)) if (m) { setErr(id, m); bad = true; }
         if (bad) return;
-        busy(btn, true, existing ? 'Saving…' : 'Submitting…');
+        busy(btn, true, existing ? 'Saving…' : 'Adding…');
         try {
           await api(existing ? `/projects/${existing.id}` : '/projects', { method: existing ? 'PATCH' : 'POST', body });
-          close(); toast(existing ? 'Project updated.' : 'Project submitted!', 'success');
-          if (parseHash()[0] === 'web') loadProjects(true); else route();
+          close(); toast(existing ? 'Website updated.' : 'Website added to your profile!', 'success');
+          route();
         } catch (err) {
           busy(btn, false);
           if (!applyServerErrors({ title: 'pf-title', description: 'pf-desc', url: 'pf-url', preview_url: 'pf-prev' }, err)) $('#pf-error', d).textContent = err.message;
@@ -1296,11 +1267,10 @@ function projectModal(existing) {
 }
 async function deleteProject(id) {
   const p = S.proj.get(id);
-  if (!(await confirmDialog(`Delete “${p?.title || 'this project'}”? This can’t be undone.`))) return;
+  if (!(await confirmDialog(`Delete “${p?.title || 'this website'}”? This can’t be undone.`))) return;
   try {
     await api(`/projects/${id}`, { method: 'DELETE' });
-    toast('Project deleted.', 'success'); S.proj.delete(id);
-    S.web.items = S.web.items.filter((x) => x.id !== id);
+    toast('Website deleted.', 'success'); S.proj.delete(id);
     route();
   } catch (e) { toast(e.message, 'error'); }
 }
@@ -1333,8 +1303,8 @@ async function renderProfile(username, isSelf, token) {
       </div>
       ${u.bio ? `<p class="profile-bio">${esc(u.bio)}</p>` : `<p class="profile-bio" style="color:var(--muted)">${isSelf ? 'You haven’t written a bio yet.' : 'No bio yet.'}</p>`}
       <div class="profile-meta">${u.website ? `<a href="${esc(u.website)}" target="_blank" rel="noopener noreferrer nofollow">${icon('link', 15)} ${esc(site)}</a>` : ''}<span>${icon('calendar', 15)} Joined ${esc(fmtJoined(u.created_at))}</span></div></div></div>
-    <h2 class="section-title">Website projects <span class="pill">${projects.length}</span>${isSelf ? `<button class="btn sm primary" style="margin-left:auto" data-action="new-project">${icon('plus', 15)} Submit</button>` : ''}</h2>
-    ${projects.length ? `<div class="grid">${projects.map(projectCard).join('')}</div>` : `<div class="empty"><div class="em-ico">${icon('globe', 24)}</div><h3>No projects yet</h3><p>${isSelf ? 'Share a website you built with the community.' : `${esc(u.display_name)} hasn’t shared any projects.`}</p></div>`}
+    <h2 class="section-title">Websites <span class="pill">${projects.length}</span>${isSelf ? `<button class="btn sm primary" style="margin-left:auto" data-action="new-project">${icon('plus', 15)} Add website</button>` : ''}</h2>
+    ${projects.length ? `<div class="grid">${projects.map(projectCard).join('')}</div>` : `<div class="empty"><div class="em-ico">${icon('globe', 24)}</div><h3>No websites yet</h3><p>${isSelf ? 'Add a website you built and it will show up here on your profile.' : `${esc(u.display_name)} hasn’t added any websites.`}</p>${isSelf ? `<button class="btn primary" data-action="new-project">${icon('plus', 16)} Add website</button>` : ''}</div>`}
   </div>`);
   S.profileView = { user: u };
 }
@@ -1507,8 +1477,6 @@ document.addEventListener('click', async (e) => {
     case 'new-project': projectModal(null); break;
     case 'edit-project': projectModal(S.proj.get(t.dataset.id)); break;
     case 'delete-project': deleteProject(t.dataset.id); break;
-    case 'more-projects': busy(t, true); await loadProjects(false); break;
-    case 'retry-projects': loadProjects(true); break;
     case 'edit-profile': editProfileModal(); break;
     case 'message-user': startDm(t.dataset.username); break;
     default: break;
