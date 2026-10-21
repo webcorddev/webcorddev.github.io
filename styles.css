@@ -615,7 +615,7 @@ dialog.modal.wide .code pre { max-height: 62vh; }
 @media (prefers-reduced-motion: reduce) { .rn, .rtag { animation: none; } }
 .cs-card-main { display: block; color: inherit; }
 
-/* ===== Codespace AI agent panel ===== */
+/* ===== Codespace AI agent panelre ===== */
 .cs-body { position: relative; }
 .agent-btn[aria-pressed="true"] { background: var(--brand-soft); border-color: #cfc9ff; color: var(--brand-ink); }
 .agent-btn .ico { color: var(--brand); }
