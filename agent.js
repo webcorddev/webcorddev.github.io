@@ -11,7 +11,7 @@ Object.assign(ICONS, {
 });
 
 const AG_MAX_STEPS = 14;                 // model turns per request
-const AG_BUDGET_CHARS = 11000;           // keep the conversation small: free-tier quotas are small
+const AG_BUDGET_CHARS = 30000;           // keep the conversation small: free-tier quotas are small
 const AG_READ_LINES = 250;
 const AG_STUB = '(older tool output removed to save space — call read_file again if you need it)';
 const AG_IDEAS = ['Explain what this project does', 'Add a dark-mode toggle', 'Find and fix bugs in the open file', 'Create a CSS file and link it from index.html'];
@@ -133,6 +133,14 @@ const agSleep = (ms, signal) => new Promise((res, rej) => {
 });
 async function agCall(X, msgs, signal) {
   const ctx = { active: X.active || '', files: [...X.files].map(([path, f]) => (assetOf(f) ? { path, binary: true } : { path, lines: agSplit(f.content).lines.length })) };
+  // Send the files' current text with the request (open file first, then the smallest ones) so the model rarely needs a read_file round-trip.
+  let room = 24000; ctx.snapshot = [];
+  const order = [...X.files].filter(([, f]) => !assetOf(f)).sort((a, b) => (a[0] === X.active ? -1 : b[0] === X.active ? 1 : a[1].content.length - b[1].content.length));
+  for (const [path, f] of order) {
+    const text = agNum(agSplit(f.content).lines, 1);
+    if (text.length > room) continue;
+    room -= text.length; ctx.snapshot.push({ path, text });
+  }
   for (let attempt = 0; ; attempt++) {
     if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
     try {
