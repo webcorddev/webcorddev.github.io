@@ -123,7 +123,7 @@ async function agTool(X, name, args, turn) {
 /* ---------- one model turn (the Worker adds the system prompt and talks to Gemini) ---------- */
 function agCompact(msgs) {
   const out = msgs.map((m) => ({ ...m }));
-  const size = () => out.reduce((n, m) => n + (m.content ? m.content.length : 0) + (m.tool_calls ? JSON.stringify(m.tool_calls).length : 0), 0);
+  const size = () => out.reduce((n, m) => n + (m.content ? m.content.length : 0) + (m.tool_calls ? JSON.stringify(m.tool_calls.map((t) => t.function)).length : 0), 0);
   for (let i = 0; i < out.length - 2 && size() > AG_BUDGET_CHARS; i++) if (out[i].role === 'tool' && out[i].content.length > 200) out[i].content = AG_STUB;
   return out;
 }
