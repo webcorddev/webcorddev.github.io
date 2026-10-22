@@ -1,4 +1,4 @@
-/* Webcord codespace Agent — a chat panel in the editor that edits the open codespace with an AI model (Groq, via the Worker).
+/* Webcord codespace Agent — a chat panel in the editor that edits the open codespace with an AI model (Google Gemini, via the Worker).
    Loaded after codespace.js and uses its globals (E, saveFile, renderFiles, …). The model only ever sees what it reads with its tools;
    every change goes through the normal editor state + save path, so it syncs and shows up like a hand edit. */
 'use strict';
@@ -11,7 +11,7 @@ Object.assign(ICONS, {
 });
 
 const AG_MAX_STEPS = 14;                 // model turns per request
-const AG_BUDGET_CHARS = 11000;           // keep the conversation small: the free plan allows ~8K tokens per minute
+const AG_BUDGET_CHARS = 11000;           // keep the conversation small: free-tier quotas are small
 const AG_READ_LINES = 250;
 const AG_STUB = '(older tool output removed to save space — call read_file again if you need it)';
 const AG_IDEAS = ['Explain what this project does', 'Add a dark-mode toggle', 'Find and fix bugs in the open file', 'Create a CSS file and link it from index.html'];
@@ -120,7 +120,7 @@ async function agTool(X, name, args, turn) {
   }
 }
 
-/* ---------- one model turn (the Worker adds the system prompt and talks to Groq) ---------- */
+/* ---------- one model turn (the Worker adds the system prompt and talks to Gemini) ---------- */
 function agCompact(msgs) {
   const out = msgs.map((m) => ({ ...m }));
   const size = () => out.reduce((n, m) => n + (m.content ? m.content.length : 0) + (m.tool_calls ? JSON.stringify(m.tool_calls).length : 0), 0);
@@ -222,7 +222,7 @@ async function agUndo() {
 /* ---------- panel ---------- */
 function agPanelHtml() {
   return `<aside class="ag" id="ag" aria-label="AI agent" hidden>
-    <div class="ag-head"><div class="ag-title">${icon('sparkles', 17)}<div><b>Agent</b><small id="ag-model">Free AI model via Groq</small></div></div>
+    <div class="ag-head"><div class="ag-title">${icon('sparkles', 17)}<div><b>Agent</b><small id="ag-model">Free AI model via Google</small></div></div>
       <div class="ag-head-acts"><button type="button" class="btn icon sm ghost" data-ag="undo" id="ag-undo" title="Undo the agent’s last changes" aria-label="Undo the agent’s last changes" disabled>${icon('undo', 16)}</button>
       <button type="button" class="btn icon sm ghost" data-ag="clear" title="New chat" aria-label="New chat">${icon('eraser', 16)}</button>
       <button type="button" class="btn icon sm ghost" data-ag="close" title="Close" aria-label="Close agent">${icon('x', 17)}</button></div></div>
@@ -262,7 +262,7 @@ function agSync() {
   if (send) { send.innerHTML = icon(st.running ? 'stop' : 'send', 17); send.setAttribute('aria-label', st.running ? 'Stop' : 'Send'); send.dataset.running = st.running ? '1' : ''; }
   if (inp) inp.disabled = false;
   if (und) und.disabled = st.running || !(st.undo && st.undo.size);
-  if (mod) mod.textContent = st.model ? `${st.model.split('/').pop()} · Groq` : 'Free AI model via Groq';
+  if (mod) mod.textContent = st.model ? `${st.model.split('/').pop()} · Gemini` : 'Free AI model via Google';
   $('#cs-agent-btn')?.setAttribute('aria-pressed', String(st.open));
 }
 function agToggle(force) {
