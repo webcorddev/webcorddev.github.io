@@ -615,7 +615,7 @@ dialog.modal.wide .code pre { max-height: 62vh; }
 @media (prefers-reduced-motion: reduce) { .rn, .rtag { animation: none; } }
 .cs-card-main { display: block; color: inherit; }
 
-/* ===== Codespace AI agent panelre ===== */
+/* ===== Codespace AI agent panel ===== */
 .cs-body { position: relative; }
 .agent-btn[aria-pressed="true"] { background: var(--brand-soft); border-color: #cfc9ff; color: var(--brand-ink); }
 .agent-btn .ico { color: var(--brand); }
@@ -649,3 +649,8 @@ dialog.modal.wide .code pre { max-height: 62vh; }
 .ag-form .btn.icon { width: 40px; height: 40px; flex: none; }
 .ag-form #ag-send[data-running="1"] { background: var(--ink); box-shadow: none; }
 @media (max-width: 860px) { .ag { width: 100%; border-left: 0; } }
+
+/* ===== Cloudflare Turnstile ===== */
+.ts-box { margin: 2px 0 14px; min-height: 0; }
+.ts-box:not(:empty) { min-height: 65px; }
+.ts-note { display: block; text-align: center; font-size: 13px; color: var(--muted); padding: 18px 0; } .ts-note.err { color: var(--red); }
