@@ -471,6 +471,7 @@ function closeDrawers() {
    Session
    ====================================================================== */
 async function afterAuth(user, token) {
+  tsUnmount();
   if (token) setToken(token);
   S.user = user;
   await loadRoles();
@@ -628,7 +629,45 @@ function renderAuth(mode = 'login') {
   mountAuthForm(mode);
 }
 
+/* ---------- Cloudflare Turnstile (captcha on login + signup; off when TURNSTILE_SITE_KEY is empty in config.js) ---------- */
+const TS = { id: null, token: '', loading: null };
+const tsOn = () => typeof TURNSTILE_SITE_KEY === 'string' && TURNSTILE_SITE_KEY.trim() !== '';
+function tsLoad() {
+  if (window.turnstile) return Promise.resolve();
+  if (!TS.loading) TS.loading = new Promise((res, rej) => {
+    const s = document.createElement('script');
+    s.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
+    s.async = true; s.onload = () => res(); s.onerror = () => { TS.loading = null; rej(new Error('load')); };
+    document.head.appendChild(s);
+  });
+  return TS.loading;
+}
+function tsUnmount() { try { if (TS.id !== null && window.turnstile) window.turnstile.remove(TS.id); } catch { /* */ } TS.id = null; TS.token = ''; }
+async function tsMount() {
+  tsUnmount();
+  const box = $('#ts-box'); if (!box || !tsOn()) return;
+  box.innerHTML = '<span class="ts-note">Loading security check…</span>';
+  try { await tsLoad(); } catch { box.innerHTML = '<span class="ts-note err">Couldn’t load the security check. Disable ad/tracker blockers for this site and reload.</span>'; return; }
+  if ($('#ts-box') !== box) return;                    // the form was swapped while loading
+  box.innerHTML = '';
+  TS.id = window.turnstile.render(box, {
+    sitekey: TURNSTILE_SITE_KEY.trim(), theme: 'light', size: 'flexible', language: 'auto',
+    callback: (t) => { TS.token = t; },
+    'expired-callback': () => { TS.token = ''; },
+    'error-callback': () => { TS.token = ''; },
+  });
+}
+const tsReset = () => { TS.token = ''; try { if (TS.id !== null && window.turnstile) window.turnstile.reset(TS.id); } catch { /* */ } };
+/* Returns the token to send (or '' when the captcha is off). Shows an error and returns null when the check isn't done yet. */
+function tsToken(errBox) {
+  if (!tsOn()) return '';
+  if (!TS.token) { errBox.textContent = 'Please complete the security check first.'; return null; }
+  return TS.token;
+}
+const TS_HTML = '<div class="ts-box" id="ts-box" aria-label="Security check"></div>';
+
 function mountAuthForm(mode) {
+  tsUnmount();
   const area = $('#auth-area');
   history.replaceState(null, '', `#/${mode}`);
   document.title = `${mode === 'signup' ? 'Create account' : 'Log in'} — Webcord`;
@@ -641,9 +680,10 @@ function mountAuthForm(mode) {
       <form id="login-form" novalidate><div class="form-error" id="login-error" role="alert"></div>
       ${fieldHtml({ id: 'li-id', label: 'Email or username', autocomplete: 'username', placeholder: 'you@example.com', value: last, maxlength: 254 })}
       ${fieldHtml({ id: 'li-pw', label: 'Password', type: 'password', autocomplete: 'current-password', placeholder: 'Your password', pw: true, maxlength: 128 })}
+      ${TS_HTML}
       <button class="btn primary lg full" type="submit">Log In</button></form>
       <p class="auth-switch">New to Webcord? <button type="button" data-mode="signup">Create an account</button></p>`;
-    $('#login-form').addEventListener('submit', onLogin);
+    $('#login-form').addEventListener('submit', onLogin); tsMount();
     $(last ? '#li-pw' : '#li-id').focus({ preventScroll: true });
   } else {
     area.innerHTML = `${tabs}<h1>Create your account</h1><p class="sub">It takes less than a minute.</p>
@@ -656,10 +696,11 @@ function mountAuthForm(mode) {
       ${fieldHtml({ id: 'su-pw', label: 'Password', type: 'password', autocomplete: 'new-password', placeholder: 'At least 8 characters', pw: true, maxlength: 128 })}
       <div class="strength" aria-hidden="true" style="margin:-6px 0 14px"><i id="pw-strength"></i></div>
       ${fieldHtml({ id: 'su-pw2', label: 'Confirm password', type: 'password', autocomplete: 'new-password', placeholder: 'Repeat your password', pw: true, maxlength: 128 })}
+      ${TS_HTML}
       <button class="btn primary lg full" type="submit">Create Account</button></form>
       <p class="auth-switch">Already have an account? <button type="button" data-mode="login">Log in</button></p>`;
     const f = $('#signup-form');
-    f.addEventListener('submit', onSignup);
+    f.addEventListener('submit', onSignup); tsMount();
     $('#su-pw').addEventListener('input', (e) => {
       const v = e.target.value; let s = 0;
       if (v.length >= 8) s++; if (v.length >= 12) s++; if (/[A-Z]/.test(v) && /[a-z]/.test(v)) s++; if (/\d/.test(v) && /[^A-Za-z0-9]/.test(v)) s++;
@@ -689,14 +730,15 @@ async function onLogin(e) {
   if (!identifier) { setErr('li-id', 'Enter your email or username.'); bad = true; }
   if (!password) { setErr('li-pw', 'Enter your password.'); bad = true; }
   if (bad) return;
+  const turnstile = tsToken(errBox); if (turnstile === null) return;
   busy(btn, true, 'Logging in…');
   try {
-    const r = await api('/auth/login', { method: 'POST', body: { identifier, password }, quiet: true });
+    const r = await api('/auth/login', { method: 'POST', body: { identifier, password, turnstile }, quiet: true });
     btn.innerHTML = `${icon('check', 18)} Logged in`;
     toast(`Welcome back, ${r.user.display_name}!`, 'success');
     setTimeout(() => afterAuth(r.user, r.token), 350);
   } catch (err) {
-    busy(btn, false);
+    busy(btn, false); tsReset();
     errBox.textContent = err.message;
     $('#li-pw').value = ''; $('#li-pw').focus();
   }
@@ -711,14 +753,15 @@ async function onSignup(e) {
   let first = null;
   for (const [id, m] of Object.entries(errs)) if (m) { setErr(id, m); first = first || id; }
   if (first) { document.getElementById(first).focus(); return; }
+  const turnstile = tsToken(errBox); if (turnstile === null) return;
   busy(btn, true, 'Creating account…');
   try {
-    const r = await api('/auth/register', { method: 'POST', body: { email: v.email.trim(), username: v.username.trim(), display_name: v.display.trim(), password: v.pw }, quiet: true });
+    const r = await api('/auth/register', { method: 'POST', body: { email: v.email.trim(), username: v.username.trim(), display_name: v.display.trim(), password: v.pw, turnstile }, quiet: true });
     btn.innerHTML = `${icon('check', 18)} Account created`;
     toast(`Welcome to Webcord, ${r.user.display_name}!`, 'success');
     setTimeout(() => afterAuth(r.user, r.token), 450);
   } catch (err) {
-    busy(btn, false);
+    busy(btn, false); tsReset();
     const shown = applyServerErrors({ email: 'su-email', username: 'su-username', display_name: 'su-display', password: 'su-pw' }, err);
     errBox.textContent = shown ? 'Please fix the highlighted fields.' : err.message;
   }
@@ -1506,4 +1549,3 @@ document.addEventListener('error', (e) => {
   S.booted = true;
   route();
 })();
-//redeployed
