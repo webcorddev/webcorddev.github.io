@@ -1,4 +1,4 @@
-/* Webcord codespace Agent — a chat panel in the editor that edits the open codespace with an AI model (Google Gemini, via the Worker).
+/* Webcord codespace Agent — a chat panel in the editor that edits the open codespace with an AI model (free AI providers, via the Worker).
    Loaded after codespace.js and uses its globals (E, saveFile, renderFiles, …). The model only ever sees what it reads with its tools;
    every change goes through the normal editor state + save path, so it syncs and shows up like a hand edit. */
 'use strict';
@@ -120,7 +120,7 @@ async function agTool(X, name, args, turn) {
   }
 }
 
-/* ---------- one model turn (the Worker adds the system prompt and talks to Gemini) ---------- */
+/* ---------- one model turn (the Worker adds the system prompt and talks to the AI providers) ---------- */
 function agCompact(msgs) {
   const out = msgs.map((m) => ({ ...m }));
   const size = () => out.reduce((n, m) => n + (m.content ? m.content.length : 0) + (m.tool_calls ? JSON.stringify(m.tool_calls.map((t) => t.function)).length : 0), 0);
@@ -168,7 +168,7 @@ async function agRun(text) {
       if (X.dead || E !== X) return;
       const r = await agCall(X, [...st.history, ...run], st.abort.signal);
       if (X.dead || E !== X) return;
-      st.model = r.model || st.model;
+      st.model = r.model || st.model; st.provider = r.provider || st.provider;
       const m = r.message || {};
       run.push({ role: 'assistant', content: m.content || '', ...(m.tool_calls ? { tool_calls: m.tool_calls } : {}) });
       if (!m.tool_calls || !m.tool_calls.length) { turn.text = (m.content || '').trim() || (touched ? 'Done.' : ''); break; }
@@ -230,7 +230,7 @@ async function agUndo() {
 /* ---------- panel ---------- */
 function agPanelHtml() {
   return `<aside class="ag" id="ag" aria-label="AI agent" hidden>
-    <div class="ag-head"><div class="ag-title">${icon('sparkles', 17)}<div><b>Agent</b><small id="ag-model">Free AI model via Google</small></div></div>
+    <div class="ag-head"><div class="ag-title">${icon('sparkles', 17)}<div><b>Agent</b><small id="ag-model">Free AI model</small></div></div>
       <div class="ag-head-acts"><button type="button" class="btn icon sm ghost" data-ag="undo" id="ag-undo" title="Undo the agent’s last changes" aria-label="Undo the agent’s last changes" disabled>${icon('undo', 16)}</button>
       <button type="button" class="btn icon sm ghost" data-ag="clear" title="New chat" aria-label="New chat">${icon('eraser', 16)}</button>
       <button type="button" class="btn icon sm ghost" data-ag="close" title="Close" aria-label="Close agent">${icon('x', 17)}</button></div></div>
@@ -270,7 +270,7 @@ function agSync() {
   if (send) { send.innerHTML = icon(st.running ? 'stop' : 'send', 17); send.setAttribute('aria-label', st.running ? 'Stop' : 'Send'); send.dataset.running = st.running ? '1' : ''; }
   if (inp) inp.disabled = false;
   if (und) und.disabled = st.running || !(st.undo && st.undo.size);
-  if (mod) mod.textContent = st.model ? `${st.model.split('/').pop()} · Gemini` : 'Free AI model via Google';
+  if (mod) mod.textContent = st.model ? `${st.model.split('/').pop().replace(/:free$/, '')} · ${st.provider || 'AI'}` : 'Free AI model';
   $('#cs-agent-btn')?.setAttribute('aria-pressed', String(st.open));
 }
 function agToggle(force) {
