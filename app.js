@@ -11,6 +11,7 @@ const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = se
 const app = document.getElementById('app');
 
 const ICONS = {
+  palette: '<circle cx="13.5" cy="6.5" r="1.2"/><circle cx="17.5" cy="10.5" r="1.2"/><circle cx="8.5" cy="7.5" r="1.2"/><circle cx="6.5" cy="12.5" r="1.2"/><path d="M12 2a10 10 0 1 0 0 20c1.1 0 2-.9 2-2 0-.5-.2-1-.5-1.3-.3-.4-.5-.8-.5-1.3 0-1.1.9-2 2-2h2.3A4.7 4.7 0 0 0 22 10.7C22 5.9 17.5 2 12 2z"/>',
   chat: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
   globe: '<circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>',
   user: '<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>',
@@ -102,12 +103,13 @@ const TICK_SVG = '<path d="M3.85 8.62a4 4 0 0 1 4.78-4.77 4 4 0 0 1 6.74 0 4 4 0
 function nameHtml(u, opts = {}) {
   const text = esc(opts.text ?? u.display_name);
   const rs = (u.roles || []).map((k) => (S.roles[k] ? { key: k, ...S.roles[k] } : null)).filter(Boolean).sort((a, b) => b.priority - a.priority);
-  if (!rs.length) return text;
-  const styled = rs.find((r) => r.colors.length >= 2);
+  const chosen = u.style && u.style !== 'plain' && S.roles[u.style] && S.roles[u.style].colors.length >= 2 ? { key: u.style, ...S.roles[u.style] } : null;   // the look the person picked in Profile → Name style
+  const styled = u.style === 'plain' ? null : chosen || rs.find((r) => r.colors.length >= 2) || null;
+  if (!rs.length && !styled) return text;
   let h = styled ? `<span class="rn rn-${roleCls(styled.key)}${styled.glow ? ' rn-glow' : ''}">${text}</span>` : text;
   const tick = rs.find((r) => r.tick);
   if (tick) h += `<svg class="vtick" style="color:${tick.tick}" viewBox="0 0 24 24" role="img" aria-label="${esc(tick.label)}"><title>${esc(tick.label)}</title>${TICK_SVG}</svg>`;
-  if (opts.tag !== false) for (const r of rs) if (r.tag && r.colors.length >= 2) h += `<span class="rtag rtag-${roleCls(r.key)}" title="${esc(r.label)}">${esc(r.tag)}</span>`;
+  if (opts.tag !== false && styled && styled.tag) h += `<span class="rtag rtag-${roleCls(styled.key)}" title="${esc(styled.label)}">${esc(styled.tag)}</span>`;
   return h;
 }
 
@@ -1342,7 +1344,7 @@ async function renderProfile(username, isSelf, token) {
     <div class="card" style="border-radius:20px;overflow:hidden"><div class="profile-banner"></div>
       <div class="profile-card"><div class="profile-top">${avatar(u, 96)}
         <div class="profile-id"><h1>${nameHtml(u)}</h1><div class="handle">@${esc(u.username)} ${S.online.has(u.id) || isSelf && S.wsOpen ? '<span class="status on" style="margin-left:6px">Online</span>' : ''}</div></div>
-        ${isSelf ? `<button class="btn" data-action="edit-profile">${icon('edit', 16)} Edit profile</button>` : `<button class="btn primary" data-action="message-user" data-username="${esc(u.username)}">${icon('chat', 16)} Message</button>`}
+        ${isSelf ? `<span class="profile-btns"><button class="btn" data-action="name-style">${icon('palette', 16)} Name style</button><button class="btn" data-action="edit-profile">${icon('edit', 16)} Edit profile</button></span>` : `<button class="btn primary" data-action="message-user" data-username="${esc(u.username)}">${icon('chat', 16)} Message</button>`}
       </div>
       ${u.bio ? `<p class="profile-bio">${esc(u.bio)}</p>` : `<p class="profile-bio" style="color:var(--muted)">${isSelf ? 'You haven’t written a bio yet.' : 'No bio yet.'}</p>`}
       <div class="profile-meta">${u.website ? `<a href="${esc(u.website)}" target="_blank" rel="noopener noreferrer nofollow">${icon('link', 15)} ${esc(site)}</a>` : ''}<span>${icon('calendar', 15)} Joined ${esc(fmtJoined(u.created_at))}</span></div></div></div>
@@ -1350,6 +1352,33 @@ async function renderProfile(username, isSelf, token) {
     ${projects.length ? `<div class="grid">${projects.map(projectCard).join('')}</div>` : `<div class="empty"><div class="em-ico">${icon('globe', 24)}</div><h3>No websites yet</h3><p>${isSelf ? 'Add a website you built and it will show up here on your profile.' : `${esc(u.display_name)} hasn’t added any websites.`}</p>${isSelf ? `<button class="btn primary" data-action="new-project">${icon('plus', 16)} Add website</button>` : ''}</div>`}
   </div>`);
   S.profileView = { user: u };
+}
+/* Profile → Name style: pick how your name looks — automatic, plain, one of your own roles, or a free colour. */
+function nameStyleModal() {
+  const me = S.user, held = (me.roles || []).filter((k) => S.roles[k] && S.roles[k].colors.length >= 2);
+  const free = Object.keys(S.roles).filter((k) => S.roles[k].free);
+  const cur = me.style || '';
+  const card = (val, title, hint, preview) => `<label class="opt ns-opt"><input type="radio" name="ns" value="${esc(val)}" ${cur === val ? 'checked' : ''}><span class="opt-in"><span class="ns-prev">${preview}</span><b>${esc(title)}</b>${hint ? `<small>${esc(hint)}</small>` : ''}</span></label>`;
+  const pv = (roles, style) => nameHtml({ display_name: me.display_name, roles, style });
+  openModal({
+    title: 'Name style', wide: true,
+    html: `<p class="ns-lead">Choose how your name looks everywhere on Webcord. Your roles still give you their permissions and badges.</p>
+      <div class="ns-sec"><h3>Default</h3><div class="opts ns-grid">
+        ${card('', 'Automatic', 'Your highest role', pv(me.roles, null))}${card('plain', 'Plain', 'No colour', pv(me.roles, 'plain'))}</div></div>
+      ${held.length ? `<div class="ns-sec"><h3>Your roles</h3><div class="opts ns-grid">${held.map((k) => card(k, S.roles[k].label, S.roles[k].tag ? 'Shows the ' + S.roles[k].tag + ' tag' : 'Animated colours', pv([k], k))).join('')}</div></div>` : ''}
+      <div class="ns-sec"><h3>Free colours</h3><div class="opts ns-grid">${free.map((k) => card(k, S.roles[k].label, '', pv([], k))).join('')}</div></div>
+      <p class="form-error" id="ns-error" role="alert"></p>`,
+    onOpen: (d) => {
+      d.addEventListener('change', async (e) => {
+        if (e.target.name !== 'ns') return;
+        try {
+          const r = await api('/me', { method: 'PATCH', body: { name_style: e.target.value } });
+          S.user = { ...S.user, ...r.user }; renderMeCard(); toast('Name style updated.', 'success');
+          if (['profile', 'u'].includes(parseHash()[0])) route();
+        } catch (err) { $('#ns-error', d).textContent = err.message; }
+      });
+    },
+  });
 }
 function editProfileModal() {
   const u = S.user;
@@ -1521,6 +1550,7 @@ document.addEventListener('click', async (e) => {
     case 'edit-project': projectModal(S.proj.get(t.dataset.id)); break;
     case 'delete-project': deleteProject(t.dataset.id); break;
     case 'edit-profile': editProfileModal(); break;
+    case 'name-style': nameStyleModal(); break;
     case 'message-user': startDm(t.dataset.username); break;
     default: break;
   }
