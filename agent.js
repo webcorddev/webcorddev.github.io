@@ -14,7 +14,7 @@ const AG_MAX_STEPS = 14;                 // model turns per request
 const AG_BUDGET_CHARS = 30000;           // keep the conversation small: free-tier quotas are small
 const AG_READ_LINES = 250;
 const AG_STUB = '(older tool output removed to save space — call read_file again if you need it)';
-const AG_IDEAS = ['Explain what this project does', 'Add a dark-mode toggle', 'Find and fix bugs in the open file', 'Create a CSS file and link it from index.html'];
+const AG_IDEAS = [['eye', 'Explain what this project does'], ['sparkles', 'Add a dark-mode toggle'], ['code', 'Find and fix bugs in the open file'], ['fileplus', 'Create a CSS file and link it from index.html']];
 
 const agSt = (X) => X.agent || (X.agent = { open: false, running: false, abort: null, turns: [], history: [], undo: null, model: '', status: '' });
 const agNum = (lines, from) => lines.map((l, i) => `${from + i}| ${l}`).join('\n');
@@ -60,17 +60,17 @@ async function agTool(X, name, args, turn) {
   if (!canEdit()) return 'Error: this codespace is view-only.';
   const act = { kind: name, path: csNorm(args.path), status: 'run', label: '' };
   turn.acts.push(act); agRender();
-  const fin = (status, label, out) => { act.status = status; act.label = label; agRender(); return out; };
+  const fin = (status, label, out, extra) => { act.status = status; act.label = label; if (extra) Object.assign(act, extra); agRender(); return out; };
   try {
     if (name === 'read_file') {
       const g = agGetFile(X, args.path); if (g.err) return fin('err', `Couldn’t read ${act.path}`, g.err);
       const { lines } = agSplit(g.f.content), total = lines.length;
-      if (!total) return fin('ok', `Read ${g.path}`, `${g.path} is empty (0 lines).`);
+      if (!total) return fin('ok', `Read ${g.path}`, `${g.path} is empty (0 lines).`, { verb: 'Read', detail: 'empty' });
       const s = Math.min(Math.max(1, agInt(args.start_line) || 1), total);
       const e = Math.min(total, Math.max(s, agInt(args.end_line) || s + AG_READ_LINES - 1), s + AG_READ_LINES - 1);
       let text = agNum(lines.slice(s - 1, e), s);
       if (text.length > 12000) text = text.slice(0, 12000) + '\n…(cut)';
-      return fin('ok', `Read ${g.path}${e - s + 1 < total ? ` (lines ${s}–${e})` : ''}`, `${g.path} — lines ${s}-${e} of ${total}\n${text}${e < total ? `\n(more: call read_file with start_line=${e + 1})` : ''}`);
+      return fin('ok', `Read ${g.path}${e - s + 1 < total ? ` (lines ${s}–${e})` : ''}`, `${g.path} — lines ${s}-${e} of ${total}\n${text}${e < total ? `\n(more: call read_file with start_line=${e + 1})` : ''}`, { verb: 'Read', detail: e - s + 1 < total ? `lines ${s}–${e}` : '' });
     }
     if (name === 'edit_lines') {
       const g = agGetFile(X, args.path); if (g.err) return fin('err', `Couldn’t edit ${act.path}`, g.err);
@@ -89,7 +89,8 @@ async function agTool(X, name, args, turn) {
       const bad = await agWrite(X, g.path, content); if (bad) return fin('err', `Couldn’t save ${g.path}`, bad);
       const from = Math.max(1, s - 2), to = Math.min(out.length, s + add.length + 1);
       const label = e < s ? `Inserted ${add.length} line${add.length === 1 ? '' : 's'} in ${g.path} at line ${s}` : add.length ? `Edited ${g.path} (lines ${s}–${e})` : `Removed lines ${s}–${e} from ${g.path}`;
-      return fin('ok', label, `OK. ${g.path} now has ${out.length} lines. Current lines ${from}-${to}:\n${agNum(out.slice(from - 1, to), from)}`);
+      return fin('ok', label, `OK. ${g.path} now has ${out.length} lines. Current lines ${from}-${to}:\n${agNum(out.slice(from - 1, to), from)}`,
+        { verb: e < s ? 'Inserted in' : add.length ? 'Edited' : 'Removed from', detail: e < s ? `line ${s}` : `lines ${s}–${e}`, add: add.length, del: e < s ? 0 : e - s + 1 });
     }
     if (name === 'create_file') {
       const path = csNorm(args.path), bad = csPathError(path);
@@ -102,9 +103,9 @@ async function agTool(X, name, args, turn) {
       if (ex) {
         if (!args.overwrite) return fin('err', `${path} already exists`, `Error: "${path}" already exists. Use edit_lines to change it, or pass overwrite=true to replace it completely.`);
         if (assetOf(ex)) return fin('err', `${path} is binary`, `Error: "${path}" is a binary file.`);
-        agRemember(X, path);
+        agRemember(X, path); const oldLines = agSplit(ex.content).lines.length;
         const b = await agWrite(X, path, content); if (b) return fin('err', `Couldn’t save ${path}`, b);
-        return fin('ok', `Rewrote ${path}`, `OK. ${path} was replaced (${agSplit(content).lines.length} lines).`);
+        return fin('ok', `Rewrote ${path}`, `OK. ${path} was replaced (${agSplit(content).lines.length} lines).`, { verb: 'Rewrote', add: agSplit(content).lines.length, del: oldLines });
       }
       if (X.files.size >= 60) return fin('err', 'Too many files', 'Error: a codespace can hold at most 60 files.');
       const r = await api(`/codespaces/${encodeURIComponent(X.id)}/files`, { method: 'PUT', body: { path, content, create: true }, quiet: true });
@@ -112,7 +113,7 @@ async function agTool(X, name, args, turn) {
       agRemember(X, path);                     // must run BEFORE the file is added below, so Undo knows it didn't exist
       X.files.set(path, { content, saved: content, rev: r.file.rev, dirty: false, saving: false, conflict: null, by: S.user.username, error: '' });
       renderFiles();
-      return fin('ok', `Created ${path}`, `OK. Created ${path} (${agSplit(content).lines.length} lines).`);
+      return fin('ok', `Created ${path}`, `OK. Created ${path} (${agSplit(content).lines.length} lines).`, { verb: 'Created', add: agSplit(content).lines.length, del: 0 });
     }
     return fin('err', `Unknown tool ${name}`, `Error: unknown tool "${name}".`);
   } catch (e) {
@@ -160,7 +161,7 @@ async function agRun(text) {
   st.turns.push({ role: 'user', text });
   const turn = { role: 'assistant', text: '', acts: [], error: '' };
   st.turns.push(turn);
-  st.running = true; st.abort = new AbortController(); st.undo = new Map(); st.status = ''; agRender(); agSync();
+  st.running = true; st.abort = new AbortController(); st.undo = new Map(); st.runTurn = turn; st.status = ''; agRender(); agSync();
   const run = [{ role: 'user', content: text }];
   let touched = false;
   try {
@@ -230,47 +231,71 @@ async function agUndo() {
 /* ---------- panel ---------- */
 function agPanelHtml() {
   return `<aside class="ag" id="ag" aria-label="AI agent" hidden>
-    <div class="ag-head"><div class="ag-title">${icon('sparkles', 17)}<div><b>Agent</b><small id="ag-model">Free AI model</small></div></div>
-      <div class="ag-head-acts"><button type="button" class="btn icon sm ghost" data-ag="undo" id="ag-undo" title="Undo the agent’s last changes" aria-label="Undo the agent’s last changes" disabled>${icon('undo', 16)}</button>
-      <button type="button" class="btn icon sm ghost" data-ag="clear" title="New chat" aria-label="New chat">${icon('eraser', 16)}</button>
-      <button type="button" class="btn icon sm ghost" data-ag="close" title="Close" aria-label="Close agent">${icon('x', 17)}</button></div></div>
+    <header class="ag-head"><span class="ag-logo">${icon('sparkles', 18)}</span>
+      <div class="ag-title"><b>Agent</b><span class="ag-model"><i class="ag-dot"></i><span id="ag-model">Cerebras</span></span></div>
+      <div class="ag-head-acts"><button type="button" class="ag-icon" data-ag="clear" title="New chat" aria-label="New chat">${icon('plus', 17)}</button>
+      <button type="button" class="ag-icon" data-ag="close" title="Close" aria-label="Close agent">${icon('x', 17)}</button></div></header>
     <div class="ag-log" id="ag-log" role="log" aria-live="polite"></div>
-    <form class="ag-form" id="ag-form" autocomplete="off"><textarea id="ag-input" rows="1" maxlength="4000" placeholder="Ask the agent to change your code…" aria-label="Message the agent"></textarea>
-      <button type="submit" class="btn primary icon" id="ag-send" aria-label="Send">${icon('send', 17)}</button></form>
+    <div class="ag-bar" id="ag-bar" hidden><span class="ag-bar-txt" id="ag-bar-txt"></span><button type="button" class="ag-undo" data-ag="undo" id="ag-undo">${icon('undo', 14)} Undo</button></div>
+    <form class="ag-form" id="ag-form" autocomplete="off"><div class="ag-box">
+      <textarea id="ag-input" rows="1" maxlength="4000" placeholder="Ask the agent to build or change something…" aria-label="Message the agent"></textarea>
+      <div class="ag-box-foot"><span class="ag-hint"><kbd>Enter</kbd> to send · <kbd>Shift</kbd>+<kbd>Enter</kbd> new line</span>
+      <button type="submit" class="ag-send" id="ag-send" aria-label="Send">${icon('send', 16)}</button></div></div></form>
   </aside>`;
+}
+const AG_ING = { read_file: 'Reading', edit_lines: 'Editing', create_file: 'Creating' };
+function agStep(X, a) {
+  const name = (a.path || '').split('/').pop() || a.kind;
+  const k = a.path ? fileKind(name) : null;
+  const ico = a.status === 'run' ? '<span class="spinner"></span>' : a.status === 'err' ? icon('x', 13) : a.kind === 'read_file' ? icon('eye', 13) : `<span class="cs-ext tone-${k ? k.tone : 'slate'}">${esc(k ? k.badge : '·')}</span>`;
+  let main;
+  if (a.status === 'err') main = `<span class="ag-step-main">${esc(a.label || 'Something went wrong')}</span>`;
+  else {
+    const verb = a.status === 'run' ? AG_ING[a.kind] || 'Working on' : a.verb || 'Done';
+    const open = a.kind !== 'read_file' && X.files.has(a.path);
+    const path = open ? `<button type="button" class="ag-path" data-cs="open-file" data-path="${esc(a.path)}" title="Open ${esc(a.path)}">${esc(a.path)}</button>` : `<span class="ag-path plain" title="${esc(a.path)}">${esc(a.path)}</span>`;
+    main = `<span class="ag-step-main"><span class="ag-verb">${esc(verb)}</span>${path}${a.detail ? `<em>${esc(a.detail)}</em>` : ''}</span>`;
+  }
+  const stats = a.status === 'ok' && (a.add || a.del) ? `<span class="ag-stats">${a.add ? `<i class="add">+${a.add}</i>` : ''}${a.del ? `<i class="del">−${a.del}</i>` : ''}</span>` : '';
+  return `<li class="ag-step ${a.status} ${a.kind === 'read_file' ? 'read' : ''}"><span class="ag-step-ico">${ico}</span>${main}${stats}</li>`;
 }
 function agRender() {
   const X = E, log = $('#ag-log'); if (!X || !log) return;
   const st = agSt(X);
   const near = log.scrollHeight - log.scrollTop - log.clientHeight < 80;
   if (!st.turns.length) {
-    log.innerHTML = `<div class="ag-empty"><div class="ag-spark">${icon('sparkles', 24)}</div><h3>Build with the agent</h3>
-      <p>Describe a change and it will read your files, edit specific lines and create new files for you. You can undo what it did.</p>
-      <div class="ag-ideas">${AG_IDEAS.map((t) => `<button type="button" class="chip" data-ag="idea" data-text="${esc(t)}">${esc(t)}</button>`).join('')}</div></div>`;
+    log.innerHTML = `<div class="ag-empty"><div class="ag-hero"><span>${icon('sparkles', 26)}</span></div><h3>What should we build?</h3>
+      <p>The agent reads your files, edits exactly the lines that need to change and creates new files. Every request can be undone.</p>
+      <div class="ag-ideas">${AG_IDEAS.map(([ic, t]) => `<button type="button" class="ag-idea" data-ag="idea" data-text="${esc(t)}"><span>${icon(ic, 16)}</span>${esc(t)}</button>`).join('')}</div></div>`;
   } else {
     const last = st.turns[st.turns.length - 1];
     log.innerHTML = st.turns.map((t) => {
       if (t.role === 'user') return `<div class="ag-msg user"><div class="ag-bubble">${esc(t.text)}</div></div>`;
-      if (t.role === 'note') return `<div class="ag-note">${esc(t.text)}</div>`;
+      if (t.role === 'note') return `<div class="ag-note"><span>${esc(t.text)}</span></div>`;
       const working = st.running && t === last;
-      return `<div class="ag-msg bot"><div class="ag-ava">${icon('sparkles', 14)}</div><div class="ag-col">
-        ${t.acts.length ? `<ul class="ag-acts">${t.acts.map((a) => `<li class="${a.status}">${a.status === 'run' ? '<span class="spinner"></span>' : icon(a.status === 'ok' ? 'check' : 'x', 13)}${a.status !== 'err' && a.path && X.files.has(a.path) && a.kind !== 'read_file'
-          ? `<button type="button" data-cs="open-file" data-path="${esc(a.path)}" title="Open ${esc(a.path)}">${esc(a.label || (a.kind === 'read_file' ? 'Reading ' : a.kind === 'edit_lines' ? 'Editing ' : 'Creating ') + a.path)}</button>`
-          : `<span>${esc(a.label || (a.kind === 'read_file' ? 'Reading ' : a.kind === 'edit_lines' ? 'Editing ' : 'Creating ') + a.path)}</span>`}</li>`).join('')}</ul>` : ''}
+      return `<div class="ag-msg bot"><span class="ag-ava">${icon('sparkles', 13)}</span><div class="ag-col">
+        ${t.acts.length ? `<ul class="ag-steps">${t.acts.map((a) => agStep(X, a)).join('')}</ul>` : ''}
         ${t.text ? `<div class="ag-text msg-body">${renderMessage(t.text)}</div>` : ''}
-        ${working ? `<div class="ag-think"><span class="spinner"></span>${esc(st.status || (t.acts.length ? 'Working…' : 'Thinking…'))}</div>` : ''}
-        ${t.error ? `<div class="ag-err">${esc(t.error)}</div>` : ''}</div></div>`;
+        ${working ? `<div class="ag-think"><span class="ag-dots"><i></i><i></i><i></i></span><span>${esc(st.status || (t.acts.length ? 'Working' : 'Thinking'))}</span></div>` : ''}
+        ${t.error ? `<div class="ag-err">${icon('x', 14)}<span>${esc(t.error)}</span></div>` : ''}</div></div>`;
     }).join('');
   }
   if (near || st.running) log.scrollTop = log.scrollHeight;
 }
 function agSync() {
   const X = E; if (!X) return; const st = agSt(X);
-  const send = $('#ag-send'), inp = $('#ag-input'), und = $('#ag-undo'), mod = $('#ag-model');
-  if (send) { send.innerHTML = icon(st.running ? 'stop' : 'send', 17); send.setAttribute('aria-label', st.running ? 'Stop' : 'Send'); send.dataset.running = st.running ? '1' : ''; }
-  if (inp) inp.disabled = false;
-  if (und) und.disabled = st.running || !(st.undo && st.undo.size);
-  if (mod) mod.textContent = st.model ? `${st.model.split('/').pop().replace(/:free$/, '')} · ${st.provider || 'AI'}` : 'Free AI model';
+  const send = $('#ag-send'), bar = $('#ag-bar'), mod = $('#ag-model');
+  if (send) { send.innerHTML = icon(st.running ? 'stop' : 'send', 16); send.setAttribute('aria-label', st.running ? 'Stop' : 'Send'); send.dataset.running = st.running ? '1' : ''; }
+  if (bar) {
+    const n = st.undo ? st.undo.size : 0;
+    bar.hidden = !n || st.running;
+    if (n) {
+      const acts = (st.runTurn ? st.runTurn.acts : []).filter((a) => a.status === 'ok' && a.kind !== 'read_file');
+      const add = acts.reduce((x, a) => x + (a.add || 0), 0), del = acts.reduce((x, a) => x + (a.del || 0), 0);
+      $('#ag-bar-txt').innerHTML = `<b>${n} file${n === 1 ? '' : 's'} changed</b><span class="ag-stats">${add ? `<i class="add">+${add}</i>` : ''}${del ? `<i class="del">−${del}</i>` : ''}</span>`;
+    }
+  }
+  if (mod) mod.textContent = st.model ? `${st.model.split('/').pop()} · ${st.provider || 'Cerebras'}` : 'Cerebras';
   $('#cs-agent-btn')?.setAttribute('aria-pressed', String(st.open));
 }
 function agToggle(force) {
@@ -299,7 +324,7 @@ document.addEventListener('click', (e) => {
   switch (t.dataset.ag) {
     case 'close': agToggle(false); break;
     case 'undo': agUndo(); break;
-    case 'clear': { const st = agSt(E); if (st.running) { toast('Stop the agent first.', ''); break; } st.turns = []; st.history = []; st.undo = null; agRender(); agSync(); break; }
+    case 'clear': { const st = agSt(E); if (st.running) { toast('Stop the agent first.', ''); break; } st.turns = []; st.history = []; st.undo = null; st.runTurn = null; agRender(); agSync(); break; }
     case 'idea': { const i = $('#ag-input'); if (i) { i.value = t.dataset.text; i.focus(); i.dispatchEvent(new Event('input')); } break; }
     default: break;
   }
