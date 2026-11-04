@@ -432,7 +432,7 @@ const V = {
 /* ======================================================================
    Router
    ====================================================================== */
-const APP_SECTIONS = ['chat', 'web', 'codespace', 'profile', 'settings', 'u'];
+const APP_SECTIONS = ['chat', 'web', 'codespace', 'profile', 'settings', 'u', 'events'];
 function parseHash() {
   return location.hash.replace(/^#\/?/, '').split('/').filter(Boolean).map((p) => { try { return decodeURIComponent(p); } catch { return p; } });
 }
@@ -461,6 +461,7 @@ async function route() {
   if (sec === 'profile') return renderProfile(S.user.username, true, token);
   if (sec === 'u') return renderProfile(arg, arg && arg.toLowerCase() === S.user.username.toLowerCase(), token);
   if (sec === 'settings') return renderSettings();
+  if (sec === 'events') return renderEvents(arg, token);
 }
 window.addEventListener('hashchange', route);
 
@@ -781,6 +782,7 @@ function ensureShell() {
       <div class="sb-head">${logo(36)}<button type="button" class="btn icon ghost sb-toggle" data-action="toggle-collapse" aria-label="Collapse sidebar" title="Collapse sidebar">${icon('sidebar', 19)}</button></div>
       <nav class="nav" aria-label="Sections">
         <a href="#/chat" data-nav="chat" title="Chat">${icon('chat')}<span class="lbl">Chat</span><span class="count" id="nav-unread" hidden></span></a>
+        <a href="#/events" data-nav="events" title="Events">${icon('trophy')}<span class="lbl">Events</span></a>
         <a href="#/web" data-nav="web" title="Web">${icon('globe')}<span class="lbl">Web</span></a>
         <a href="#/profile" data-nav="profile" title="Profile">${icon('user')}<span class="lbl">Profile</span></a>
         <a href="#/settings" data-nav="settings" title="Settings">${icon('settings')}<span class="lbl">Settings</span></a>
@@ -812,7 +814,7 @@ function updateStatus() {
 }
 function setActiveNav(sec) {
   $$('.nav a').forEach((a) => (a.dataset.nav === sec ? a.setAttribute('aria-current', 'page') : a.removeAttribute('aria-current')));
-  const titles = { chat: 'Chat', web: 'Web', profile: 'Profile', settings: 'Settings' };
+  const titles = { events: 'Events', chat: 'Chat', web: 'Web', profile: 'Profile', settings: 'Settings' };
   document.title = `${titles[sec] || 'Webcord'} — Webcord`;
 }
 function setMain(html, flush = false) {
@@ -899,7 +901,7 @@ function roomsHtml() {
   const dms = S.dms.length
     ? S.dms.map((d) => `<a class="room-item ${S.room?.id === d.id ? 'active' : ''}" href="#/chat/${d.id}"><span class="av-wrap">${avatar(d.peer, 28)}<i class="dot ${S.online.has(d.peer.id) ? 'on' : ''}" data-uid="${d.peer.id}"></i></span><span class="rname">${nameHtml(d.peer, { tag: false })}</span>${badge(d.id)}</a>`).join('')
     : '<p class="muted-p">No direct messages yet. Start one with the + button.</p>';
-  return `<h3>Channels ${isAdmin() ? `<button class="btn icon sm ghost" data-action="new-channel" aria-label="Create channel" title="Create channel (admin)">${icon('plus', 16)}</button>` : ''}</h3>${pub}<h3>Direct messages <button class="btn icon sm ghost" data-action="new-dm" aria-label="New direct message">${icon('plus', 16)}</button></h3>${dms}`;
+  return `<a class="ev-side-link" href="#/events"><span class="ev-ico">${icon('trophy', 18)}</span><span><b>Events</b><small>Compete &amp; win the WINNER role</small></span></a><h3>Channels ${isAdmin() ? `<button class="btn icon sm ghost" data-action="new-channel" aria-label="Create channel" title="Create channel (admin)">${icon('plus', 16)}</button>` : ''}</h3>${pub}<h3>Direct messages <button class="btn icon sm ghost" data-action="new-dm" aria-label="New direct message">${icon('plus', 16)}</button></h3>${dms}`;
 }
 function renderRoomList() { const el = $('#rooms'); if (el) el.innerHTML = roomsHtml(); }
 
