@@ -782,3 +782,34 @@ dialog.modal.wide .code pre { max-height: 62vh; }
   .ev-hero-in, .ev-feature-in { padding: 22px; } .ev-feature-r, .ev-hero-art { display: none; }
 }
 @media (prefers-reduced-motion: reduce) { .ev-winword, .ev-feature, .ev-winner, .ev-pill.live i { animation: none; } }
+
+/* ===== Landing: codespaces + events ===== */
+.mini-code { margin: 6px 0 0; padding: 10px 12px; background: #1b1a33; color: #e6e4ff; border-radius: 10px; font: 12px/1.5 var(--mono); overflow: hidden; white-space: pre-wrap; overflow-wrap: anywhere; }
+.wl-ticks { list-style: none; margin: 0 0 22px; padding: 0; display: grid; gap: 10px; }
+.wl-ticks li { display: flex; align-items: center; gap: 10px; font-weight: 600; color: var(--ink-2); }
+.wl-ticks .tick { width: 22px; height: 22px; border-radius: 50%; background: var(--brand-soft); color: var(--brand); display: grid; place-items: center; flex: none; }
+.ws-body { display: grid; grid-template-columns: 152px 1fr; min-height: 220px; }
+.ws-files { padding: 12px 8px; border-right: 1px solid var(--line); background: var(--soft); display: grid; gap: 4px; align-content: start; }
+.ws-f { display: flex; align-items: center; gap: 7px; padding: 6px 8px; border-radius: 8px; font: 12px var(--mono); color: var(--ink-2); min-width: 0; white-space: nowrap; overflow: hidden; }
+.ws-f.on { background: var(--brand-soft); color: var(--brand-ink); font-weight: 700; }
+.ws-main { padding: 14px; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.ws-agent { display: grid; gap: 4px; padding: 10px 12px; border-radius: 12px; background: linear-gradient(135deg, #f1eeff, #fbeefe); border: 1px solid #e3dcff; font-size: 13px; color: var(--ink-2); }
+.ws-agent b { display: inline-flex; gap: 6px; align-items: center; color: var(--brand); font-size: 12.5px; }
+.ev-promo { display: grid; grid-template-columns: 1.1fr 1fr; gap: 36px; align-items: center; padding: 44px; border-radius: 26px; color: #fff; position: relative; overflow: hidden; background: radial-gradient(circle at 10% 0, #2f7bff55, transparent 50%), radial-gradient(circle at 95% 100%, #a855f766, transparent 55%), #12112b; }
+.ev-promo::before { content: ''; position: absolute; inset: 0; background-image: radial-gradient(rgba(255, 255, 255, .1) 1px, transparent 1px); background-size: 20px 20px; pointer-events: none; }
+.ev-promo > * { position: relative; }
+.ev-promo h2 { color: #fff; } .ev-promo h2 .br { color: #ffd35c; opacity: 1; font-family: inherit; }
+.ev-promo p { color: rgba(255, 255, 255, .8); margin: 0 0 18px; max-width: 36em; }
+.ev-promo-pill { display: inline-flex; align-items: center; gap: 7px; margin-bottom: 14px; font-size: 11.5px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; padding: 4px 11px; border-radius: 999px; background: rgba(255, 255, 255, .14); }
+.ev-promo-pill i { width: 7px; height: 7px; border-radius: 50%; background: #3ddc84; }
+.ev-promo-steps { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 22px; }
+.ev-promo-steps span { display: inline-flex; align-items: center; gap: 6px; padding: 6px 13px; border-radius: 999px; background: rgba(255, 255, 255, .13); font-weight: 600; font-size: 13.5px; }
+.ev-promo .ev-cta { display: inline-flex; align-items: center; gap: 8px; }
+.ev-promo-r { display: grid; gap: 10px; }
+.ev-mini { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 14px; background: rgba(255, 255, 255, .1); border: 1px solid rgba(255, 255, 255, .14); }
+.ev-mini.top { background: linear-gradient(120deg, rgba(255, 211, 92, .25), rgba(255, 255, 255, .1)); border-color: rgba(255, 211, 92, .6); }
+.ev-mini .rk { width: 28px; font-weight: 800; color: #ffd35c; display: grid; place-items: center; }
+.ev-mini div { flex: 1; min-width: 0; } .ev-mini b { display: block; } .ev-mini small { color: rgba(255, 255, 255, .65); }
+.ev-mini em { font-style: normal; font-weight: 800; display: inline-flex; align-items: center; gap: 4px; color: #ffd35c; } .ev-mini em svg { fill: currentColor; }
+@media (max-width: 860px) { .ev-promo { grid-template-columns: 1fr; padding: 28px 22px; } }
+@media (max-width: 560px) { .ws-body { grid-template-columns: 1fr; } .ws-files { border-right: 0; border-bottom: 1px solid var(--line); grid-auto-flow: column; overflow: hidden; } }
