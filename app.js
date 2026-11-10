@@ -507,11 +507,6 @@ async function logout() {
 /* ======================================================================
    Welcome page (signed out)
    ====================================================================== */
-const SAMPLE_CODE = `const hype = (devs) =>
-  devs.map((d) => d.ship("something cool"));
-
-await webcord.share(hype(world));`;
-
 function renderWelcome() {
   document.title = 'Webcord — Hype with devs worldwide';
   app.innerHTML = `
@@ -519,21 +514,21 @@ function renderWelcome() {
     <header class="wl-nav"><div class="inner">
       ${logo(36)}
       <nav class="wl-links" aria-label="Sections">
-        <button data-scroll="features">Features</button><button data-scroll="code">Code sharing</button><button data-scroll="showcase">Showcase</button>
+        <button data-scroll="features">Features</button><button data-scroll="code">Codespaces</button><button data-scroll="events">Events</button><button data-scroll="showcase">Showcase</button>
       </nav>
       <div class="wl-cta"><a class="btn ghost" href="#/signup">Sign up</a><a class="btn primary" href="#/login">Log in</a></div>
     </div></header>
 
     <section class="hero"><div class="inner">
       <div>
-        <span class="eyebrow"><i>New</i> Chat, code &amp; websites in one place</span>
+        <span class="eyebrow"><i>New</i> Chat, codespaces &amp; events in one place</span>
         <h1>Hype with <span class="hl">devs</span> <span class="br">{</span>worldwide<span class="br">}</span></h1>
-        <p class="lead">Webcord is the home for developers who like to build in public: talk in rooms, drop syntax-highlighted snippets people can copy in one click, share files, and get your websites in front of other devs.</p>
+        <p class="lead">Webcord is the home for developers who like to build in public: talk in rooms, build in live codespaces with an AI agent, enter code competitions, and get your websites in front of other devs.</p>
         <div class="actions">
           <a class="btn primary lg" href="#/signup">Get Started ${icon('send', 17)}</a>
           <button class="btn lg" data-scroll="features">Explore Webcord</button>
         </div>
-        <div class="meta"><span>${icon('check', 16)} Free to join</span><span>${icon('check', 16)} Real-time chat</span><span>${icon('check', 16)} Built for code</span></div>
+        <div class="meta"><span>${icon('check', 16)} Free to join</span><span>${icon('check', 16)} Real-time chat</span><span>${icon('check', 16)} Live codespaces</span><span>${icon('check', 16)} Code events</span></div>
       </div>
       <div class="stage" aria-hidden="true">
         <div class="float-card float-file"><span class="file-ico">${icon('file', 18)}</span><span>design-tokens.json<br><small style="color:var(--muted);font-weight:500">2.4 KB · shared in #showcase</small></span></div>
@@ -541,7 +536,10 @@ function renderWelcome() {
           <div class="mock-top"><span class="hash">#</span> general <span class="live">live</span></div>
           <div class="mock-body">
             <div class="m-msg">${avatar({ username: 'ada', display_name: 'Ada' }, 34)}<div><div class="who">Ada <small>10:41</small></div><p>Anyone know a neat way to debounce this? It fires on every keystroke.</p></div></div>
-            <div class="m-msg">${avatar({ username: 'linus', display_name: 'Linus' }, 34)}<div style="min-width:0;flex:1"><div class="who">Linus <small>10:42</small></div><p>Try this:</p>${codeBlock('const debounce = (fn, ms) => {\n  let t;\n  return (...a) => {\n    clearTimeout(t);\n    t = setTimeout(() => fn(...a), ms);\n  };\n};', 'js')}</div></div>
+            <div class="m-msg">${avatar({ username: 'linus', display_name: 'Linus' }, 34)}<div style="min-width:0;flex:1"><div class="who">Linus <small>10:42</small></div><p>Try this:</p><pre class="mini-code">const debounce = (fn, ms) => {
+  let t;
+  return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };
+};</pre></div></div>
           </div>
           <div class="mock-input"><span>Message #general</span><span style="color:var(--brand)">${icon('send', 18)}</span></div>
         </div>
@@ -551,14 +549,15 @@ function renderWelcome() {
 
     <section class="section" id="features">
       <h2 class="reveal"><span class="br">&lt;</span>Everything devs actually use<span class="br">/&gt;</span></h2>
-      <p class="sub reveal">No noise, no clutter. Five things, done properly.</p>
+      <p class="sub reveal">No noise, no clutter. Six things, done properly.</p>
       <div class="features">
         ${[
           ['chat', 'Developer chat', 'Public rooms and direct messages with real-time delivery and full message history.', '#6d5dfc,#8b5cf6'],
-          ['code', 'Code sharing', 'Fenced code blocks with syntax highlighting, language labels and a one-click Copy button.', '#ec4899,#f97316'],
+          ['code', 'Code in chat', 'Share code with syntax highlighting and language labels right inside any conversation.', '#ec4899,#f97316'],
           ['paperclip', 'File sharing', 'Drop images and files straight into a conversation. Access is limited to room members.', '#0ea5e9,#6366f1'],
           ['globe', 'Website showcase', 'Add the sites you built to your profile and browse what other devs have shipped.', '#10b981,#06b6d4'],
-          ['terminal', 'Codespaces', 'Write HTML, CSS, JS and Python in the browser, run it live, and share it privately or with the world.', '#f59e0b,#ef4444'],
+          ['terminal', 'Codespaces', 'Write HTML, CSS, JS and Python in the browser, run it live, and let the AI agent edit files for you.', '#f59e0b,#ef4444'],
+          ['trophy', 'Code events', 'Enter competitions, rate other entries, and win the animated WINNER role.', '#2f7bff,#a855f7'],
         ].map(([ic, t, d, g]) => `<article class="feat reveal"><div class="fi" style="background:linear-gradient(135deg,${g.split(',')[0]},${g.split(',')[1]})">${icon(ic, 22)}</div><h3>${t}</h3><p>${d}</p></article>`).join('')}
       </div>
     </section>
@@ -566,18 +565,38 @@ function renderWelcome() {
     <div class="band"><section class="section" id="code">
       <div class="split">
         <div>
-          <h2 class="reveal">Snippets that <span class="br">copy</span> in one click</h2>
-          <p class="sub reveal" style="margin-bottom:18px">Wrap code in triple backticks and Webcord adds highlighting, a language label and a Copy button. Inline <code class="inline" style="font-family:var(--mono);background:var(--soft-2);padding:2px 6px;border-radius:6px">code</code>, lists, quotes and links work too.</p>
-          <a class="btn primary" href="#/signup">Start sharing code</a>
+          <h2 class="reveal">Build in live <span class="br">codespaces</span></h2>
+          <p class="sub reveal" style="margin-bottom:18px">A full editor in your browser: HTML, CSS, JavaScript and Python with a live preview. Ask the built-in AI agent to edit lines or create files, and share a codespace privately or with the world.</p>
+          <ul class="wl-ticks reveal">${['Live preview as you type', 'AI agent that edits files for you', 'Private, shared or public'].map((t) => `<li><span class="tick">${icon('check', 14)}</span>${t}</li>`).join('')}</ul>
+          <a class="btn primary" href="#/signup">Open a codespace</a>
         </div>
         <div class="mock reveal" aria-hidden="true">
-          <div class="mock-top"><span class="hash">#</span> help</div>
-          <div class="mock-body">
-            <div class="m-msg">${avatar({ username: 'grace', display_name: 'Grace' }, 34)}<div style="min-width:0;flex:1"><div class="who">Grace <small>just now</small></div><p>Here's the config. Shout if it doesn't build:</p>${codeBlock('{\n  "name": "my-site",\n  "scripts": { "build": "vite build" },\n  "private": true\n}', 'json')}${codeBlock(SAMPLE_CODE, 'js')}</div></div>
+          <div class="mock-top"><span class="hash">&lt;/&gt;</span> my-site <span class="live">agent</span></div>
+          <div class="ws-body">
+            <div class="ws-files"><div class="ws-f on"><span class="cs-ext tone-html">HTML</span>index.html</div><div class="ws-f"><span class="cs-ext tone-css">CSS</span>style.css</div><div class="ws-f"><span class="cs-ext tone-js">JS</span>app.js</div></div>
+            <div class="ws-main">
+              <pre class="mini-code">&lt;h1&gt;Hello, world&lt;/h1&gt;\n&lt;button id="go"&gt;Click me&lt;/button&gt;\n&lt;script src="app.js"&gt;&lt;/script&gt;</pre>
+              <div class="ws-agent"><b>${icon('sparkles', 14)} Agent</b><span>Added a click counter to <u>app.js</u> and styled the button.</span></div>
+            </div>
           </div>
         </div>
       </div>
     </section></div>
+
+    <section class="section" id="events">
+      <div class="ev-promo reveal">
+        <div class="ev-promo-l">
+          <span class="ev-promo-pill"><i></i>Live event</span>
+          <h2>Code competitions, <span class="br">with a crown</span></h2>
+          <p>Admins start an event, everyone submits what they built, and the community rates the entries. The best one is crowned and wins the animated <b class="ev-winword">WINNER</b> role.</p>
+          <div class="ev-promo-steps"><span>${icon('upload', 15)} Submit</span><span>${icon('star', 15)} Rate</span><span>${icon('crown', 15)} Win</span></div>
+          <a class="btn lg ev-cta" href="#/signup">${icon('flag', 17)} Join the arena</a>
+        </div>
+        <div class="ev-promo-r" aria-hidden="true">
+          ${[['Gravity Golf', 'bob', 4.8, 1], ['Orbit Runner', 'ada', 4.3, 2], ['Pixel Pong', 'linus', 3.9, 3]].map(([t, u, sc, r]) => `<div class="ev-mini${r === 1 ? ' top' : ''}"><span class="rk">${r === 1 ? icon('crown', 16) : '#' + r}</span><span>${avatar({ username: u, display_name: u }, 28)}</span><div><b>${t}</b><small>by ${u}</small></div><em>${icon('star', 14)} ${sc}</em></div>`).join('')}
+        </div>
+      </div>
+    </section>
 
     <section class="section" id="showcase">
       <h2 class="reveal">Discover sites built by <span class="br">devs</span></h2>
@@ -596,7 +615,7 @@ function renderWelcome() {
 
     <footer class="wl-foot"><div class="inner">
       <div>${logo(32)}<p>Hype with devs worldwide. Chat, share code and discover what developers are building.</p></div>
-      <div><h4>Product</h4><ul><li><button data-scroll="features">Features</button></li><li><button data-scroll="code">Code sharing</button></li><li><button data-scroll="showcase">Showcase</button></li></ul></div>
+      <div><h4>Product</h4><ul><li><button data-scroll="features">Features</button></li><li><button data-scroll="code">Codespaces</button></li><li><button data-scroll="events">Events</button></li><li><button data-scroll="showcase">Showcase</button></li></ul></div>
       <div><h4>Account</h4><ul><li><a href="#/login">Log in</a></li><li><a href="#/signup">Sign up</a></li></ul></div>
       <div class="copy">© ${new Date().getFullYear()} Webcord. Made for developers.</div>
     </div></footer>
@@ -620,12 +639,12 @@ function renderAuth(mode = 'login') {
     <aside class="auth-brand-side">
       ${logo(40).replace('class="logo"', 'class="logo" tabindex="-1"')}
       <h2>Hype with devs worldwide.</h2>
-      <p>Join rooms, share snippets with highlighting and one-click copy, drop files, and show off the sites you build.</p>
+      <p>Join rooms, build in live codespaces, enter code events, and show off the sites you build.</p>
       <div class="auth-mock" aria-hidden="true">
-        <div class="m-msg">${avatar({ username: 'dev', display_name: 'Dev' }, 30)}<div style="min-width:0;flex:1"><div class="who">dev <small style="color:var(--muted)">now</small></div>${codeBlock('npm create webcord@latest', 'sh')}</div></div>
+        <div class="m-msg">${avatar({ username: 'dev', display_name: 'Dev' }, 30)}<div style="min-width:0;flex:1"><div class="who">dev <small style="color:var(--muted)">now</small></div><pre class="mini-code">npm create webcord@latest</pre></div></div>
       </div>
       <ul class="auth-feats">
-        ${['Real-time chat rooms and DMs', 'Syntax-highlighted code with one-click copy', 'File &amp; image sharing', 'A showcase for the websites you build'].map((t) => `<li><span class="tick">${icon('check', 15)}</span>${t}</li>`).join('')}
+        ${['Real-time chat rooms and DMs', 'Live codespaces with an AI agent', 'Code events &amp; the WINNER role', 'File &amp; image sharing', 'A showcase for the websites you build'].map((t) => `<li><span class="tick">${icon('check', 15)}</span>${t}</li>`).join('')}
       </ul>
     </aside>
   </div>`;
